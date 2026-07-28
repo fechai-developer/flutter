@@ -1,0 +1,13 @@
+-- Este arquivo é apenas referência histórica.
+-- A fonte de verdade agora são as MIGRAÇÕES versionadas em:
+--   supabase/migrations/
+--
+-- Para aplicar no projeto remoto (do seu terminal, com rede):
+--   supabase link --project-ref arjndxyyyoygppfxegwb
+--   supabase db push
+--
+-- Para criar uma nova alteração de schema:
+--   supabase migration new <nome>
+--   # edite o arquivo gerado em supabase/migrations/ e rode `supabase db push`
+--
+-- Migração inicial: supabase/migrations/20260720182842_init.sql
