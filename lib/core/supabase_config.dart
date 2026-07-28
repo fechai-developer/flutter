@@ -23,22 +23,20 @@ class SupabaseConfig {
   static bool get isConfigured => url.isNotEmpty && publishableKey.isNotEmpty;
 
   /// Marcado `true` só depois que `Supabase.initialize` conclui com sucesso
-  /// no boot. Se a rede falhar/estourar timeout, permanece `false` e o app
-  /// cai no mock — nunca fica travado numa tela em branco.
+  /// no boot. Com `useBackend` ligado, se a inicialização falhar o app mostra
+  /// uma tela de reconexão (não cai no mock — isso reabriria o login livre).
   static bool booted = false;
 
   /// Backend realmente disponível para uso (ligado por flag E inicializado).
   static bool get backendActive => useBackend && booted;
 
-  /// Login real fica DESLIGADO por padrão durante o desenvolvimento — a
-  /// ativação do backend/login é a AÇÃO FINAL do roadmap (exige testes em
-  /// conjunto). Enquanto isso, o app roda com dados mock, sem fricção de login.
+  /// Login real fica LIGADO por padrão — qualquer `flutter build web` já sai
+  /// com autenticação de verdade (e-mail + senha) e a guarda de sessão ativa.
   ///
-  /// Toda a integração (auth por código de e-mail, perfil, termo, guard) já
-  /// está pronta; para testar o login real quando for a hora:
-  ///   flutter run --dart-define=USE_SUPABASE=true
+  /// Para desenvolver offline com dados mock (sem fricção de login):
+  ///   flutter run --dart-define=USE_SUPABASE=false
   static const bool useBackend =
-      bool.fromEnvironment('USE_SUPABASE', defaultValue: false);
+      bool.fromEnvironment('USE_SUPABASE', defaultValue: true);
 
   /// Versão vigente do termo de uso (#10). Bump quando o texto mudar.
   static const String termsVersion = '2026-07-20';

@@ -185,14 +185,6 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
             ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
             : const Text('Entrar'),
       ),
-      const SizedBox(height: 12),
-      Text(
-        _backend
-            ? 'Use uma conta de teste (ex.: voce@fechai.test).'
-            : 'Modo demonstração: entre com qualquer e-mail.',
-        textAlign: TextAlign.center,
-        style: theme.textTheme.bodySmall,
-      ),
     ];
   }
 
