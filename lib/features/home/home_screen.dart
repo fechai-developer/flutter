@@ -91,7 +91,7 @@ class HomeScreen extends ConsumerWidget {
                       onTap: () => context.go('/groups/new'),
                     ),
                   ),
-                  const SizedBox(width: 12),
+                  const SizedBox(width: 8),
                   Expanded(
                     child: _QuickAction(
                       icon: AppIcons.repeat,
@@ -99,7 +99,7 @@ class HomeScreen extends ConsumerWidget {
                       onTap: () => context.go('/subscriptions/new'),
                     ),
                   ),
-                  const SizedBox(width: 12),
+                  const SizedBox(width: 8),
                   Expanded(
                     child: _QuickAction(
                       icon: AppIcons.piggyBank,
@@ -500,14 +500,16 @@ class _BalanceCard extends StatelessWidget {
             const SizedBox(height: 20),
             Row(
               crossAxisAlignment: CrossAxisAlignment.end,
+              // Com o chip da caixinha, distribui os 3 com folga igual entre si
+              // e as bordas; sem ele, mantém os 2 stats juntos à esquerda.
+              mainAxisAlignment: caixinhaStatus != null
+                  ? MainAxisAlignment.spaceBetween
+                  : MainAxisAlignment.start,
               children: [
                 _MiniStat(label: 'A receber', value: toReceive, icon: AppIconsFill.arrowDown),
-                const SizedBox(width: 24),
+                if (caixinhaStatus == null) const SizedBox(width: 24),
                 _MiniStat(label: 'A pagar', value: toPay, icon: AppIconsFill.arrowUp),
-                if (caixinhaStatus != null) ...[
-                  const Spacer(),
-                  _CaixinhaChip(status: caixinhaStatus),
-                ],
+                if (caixinhaStatus != null) _CaixinhaChip(status: caixinhaStatus),
               ],
             ),
           ],
@@ -663,7 +665,7 @@ class _QuickAction extends StatelessWidget {
         borderRadius: BorderRadius.circular(AppTheme.cardRadius),
         onTap: onTap,
         child: Container(
-          padding: const EdgeInsets.symmetric(vertical: 18, horizontal: 16),
+          padding: const EdgeInsets.symmetric(vertical: 18, horizontal: 10),
           decoration: BoxDecoration(
             color: theme.cardTheme.color,
             borderRadius: BorderRadius.circular(AppTheme.cardRadius),
@@ -674,7 +676,20 @@ class _QuickAction extends StatelessWidget {
             children: [
               Icon(icon, color: AppColors.verdeAguaProfundo, size: 26),
               const SizedBox(height: 8),
-              Text(label, style: theme.textTheme.labelLarge, textAlign: TextAlign.center),
+              // Uma linha sempre: rótulos longos ("Nova assinatura") encolhem só
+              // o necessário em telas estreitas, em vez de quebrar linha.
+              SizedBox(
+                width: double.infinity,
+                child: FittedBox(
+                  fit: BoxFit.scaleDown,
+                  child: Text(
+                    label,
+                    maxLines: 1,
+                    style: theme.textTheme.labelLarge,
+                    textAlign: TextAlign.center,
+                  ),
+                ),
+              ),
             ],
           ),
         ),
