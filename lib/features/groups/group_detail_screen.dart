@@ -318,6 +318,14 @@ class _SettlementRow extends ConsumerWidget {
     final iReceive = settlement.toPersonId == meId; // alguém me paga
     final iPay = settlement.fromPersonId == meId; // eu pago alguém
 
+    // Botões compactos: valor + duas ações precisam caber lado a lado no celular.
+    final compactButton = ButtonStyle(
+      padding: WidgetStatePropertyAll(const EdgeInsets.symmetric(horizontal: 8)),
+      visualDensity: VisualDensity.compact,
+      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+      textStyle: WidgetStatePropertyAll(const TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
+    );
+
     return Container(
       margin: const EdgeInsets.only(bottom: 10),
       padding: const EdgeInsets.all(14),
@@ -328,6 +336,7 @@ class _SettlementRow extends ConsumerWidget {
       ),
       child: Column(
         children: [
+          // Faixa 1: avatares + seta + "Fulano paga Ciclano" (nome + sobrenome).
           Row(
             children: [
               MemberAvatar.person(from, size: 34),
@@ -339,77 +348,73 @@ class _SettlementRow extends ConsumerWidget {
               Expanded(
                 child: Text.rich(
                   TextSpan(children: [
-                    userNameSpan(context, iPay ? 'Você' : from.name, base: theme.textTheme.bodyMedium),
+                    userNameSpan(context, iPay ? 'Você' : from.fullName, base: theme.textTheme.bodyMedium),
                     TextSpan(text: ' paga ', style: theme.textTheme.bodySmall),
-                    userNameSpan(context, iReceive ? 'você' : to.name, base: theme.textTheme.bodyMedium),
+                    userNameSpan(context, iReceive ? 'você' : to.fullName, base: theme.textTheme.bodyMedium),
                   ]),
                 ),
               ),
-              MoneyText(settlement.amount, fontSize: 16, color: AppColors.coralAceso),
             ],
           ),
-          // Só as duas pessoas envolvidas podem acertar (#6): aqui, só quando
-          // "eu" (meId) sou o pagador ou o recebedor da transferência.
-          if (iReceive) ...[
-            const SizedBox(height: 12),
-            Row(
-              children: [
-                Expanded(
-                  child: FilledButton.icon(
-                    onPressed: () async {
-                      final paid = await showChargeSheet(
-                        context,
-                        ChargeRequest(
-                          fromName: meName,
-                          fromPixKey: mePixKey,
-                          toName: from.name,
-                          toLastName: from.lastName,
-                          toPhone: from.phone,
-                          amount: settlement.amount,
-                          reason: group.name,
-                        ),
-                      );
-                      if (paid == true) onSettle();
-                    },
-                    icon: Icon(AppIconsFill.handCoins, size: 18),
-                    label: const Text('Cobra Aí'),
-                  ),
+          // Faixa 2: valor + ações. Só as duas pessoas envolvidas podem acertar
+          // (#6): botões aparecem quando "eu" (meId) sou pagador ou recebedor.
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              MoneyText(settlement.amount, fontSize: 16, color: AppColors.coralAceso),
+              const Spacer(),
+              if (iReceive) ...[
+                FilledButton.icon(
+                  style: compactButton,
+                  onPressed: () async {
+                    final paid = await showChargeSheet(
+                      context,
+                      ChargeRequest(
+                        fromName: meName,
+                        fromPixKey: mePixKey,
+                        toName: from.name,
+                        toLastName: from.lastName,
+                        toPhone: from.phone,
+                        amount: settlement.amount,
+                        reason: group.name,
+                      ),
+                    );
+                    if (paid == true) onSettle();
+                  },
+                  icon: Icon(AppIconsFill.handCoins, size: 16),
+                  label: const Text('Cobrar'),
                 ),
-                const SizedBox(width: 8),
+                const SizedBox(width: 6),
                 OutlinedButton.icon(
+                  style: compactButton,
                   onPressed: onSettle,
-                  icon: Icon(AppIcons.check, size: 18),
-                  label: const Text('Já recebi'),
+                  icon: Icon(AppIcons.check, size: 16),
+                  label: const Text('Recebido'),
                 ),
-              ],
-            ),
-          ] else if (iPay) ...[
-            const SizedBox(height: 12),
-            SizedBox(
-              width: double.infinity,
-              child: FilledButton.icon(
-                style: FilledButton.styleFrom(backgroundColor: AppColors.verdeAguaProfundo),
-                onPressed: () async {
-                  final pix = to.pixKey ??
-                      await ref.read(repositoryControllerProvider).memberPixKey(group.id, to.id);
-                  if (!context.mounted) return;
-                  final paid = await showPaySheet(
-                    context,
-                    PayRequest(
-                      toName: to.name,
-                      toLastName: to.lastName,
-                      toPixKey: pix,
-                      amount: settlement.amount,
-                      reason: group.name,
-                    ),
-                  );
-                  if (paid == true) onSettle();
-                },
-                icon: Icon(AppIcons.qrCode, size: 18),
-                label: const Text('Pagar'),
-              ),
-            ),
-          ],
+              ] else if (iPay)
+                FilledButton.icon(
+                  style: FilledButton.styleFrom(backgroundColor: AppColors.verdeAguaProfundo).merge(compactButton),
+                  onPressed: () async {
+                    final pix = to.pixKey ??
+                        await ref.read(repositoryControllerProvider).memberPixKey(group.id, to.id);
+                    if (!context.mounted) return;
+                    final paid = await showPaySheet(
+                      context,
+                      PayRequest(
+                        toName: to.name,
+                        toLastName: to.lastName,
+                        toPixKey: pix,
+                        amount: settlement.amount,
+                        reason: group.name,
+                      ),
+                    );
+                    if (paid == true) onSettle();
+                  },
+                  icon: Icon(AppIcons.qrCode, size: 16),
+                  label: const Text('Pagar'),
+                ),
+            ],
+          ),
         ],
       ),
     );

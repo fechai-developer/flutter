@@ -16,7 +16,7 @@ class ChargeRequest {
   final String fromName; // quem cobra (usuário) — primeiro nome
   final String fromPixKey; // chave PIX do recebedor
   final String toName; // quem paga — primeiro nome
-  final String? toLastName; // sobrenome do pagador (só para as iniciais do avatar)
+  final String? toLastName; // sobrenome do pagador (iniciais do avatar + nome completo)
   final String? toPhone; // telefone do pagador (para o wa.me)
   final double amount;
   final String reason; // "Praia de Maresias", "Netflix — julho"...
@@ -30,6 +30,12 @@ class ChargeRequest {
     required this.amount,
     required this.reason,
   });
+
+  /// "Nome Sobrenome" do pagador (só o primeiro nome quando não há sobrenome).
+  String get toFullName {
+    final l = toLastName?.trim() ?? '';
+    return l.isEmpty ? toName : '$toName $l';
+  }
 }
 
 /// Abre a folha de cobrança. Retorna `true` se o usuário marcou como pago.
@@ -119,7 +125,7 @@ class _ChargeSheetState extends State<_ChargeSheet> {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Text('Cobrar ${r.toName}', style: theme.textTheme.titleLarge),
+                        Text('Cobrar ${r.toFullName}', style: theme.textTheme.titleLarge),
                         Text(r.reason, style: theme.textTheme.bodySmall),
                       ],
                     ),

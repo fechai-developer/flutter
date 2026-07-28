@@ -1,11 +1,11 @@
 {
-    "name": "fechai",
-    "short_name": "fechai",
+    "name": "Fechaí",
+    "short_name": "Fechaí",
     "start_url": ".",
     "display": "standalone",
-    "background_color": "#0175C2",
-    "theme_color": "#0175C2",
-    "description": "A new Flutter project.",
+    "background_color": "#0E6E64",
+    "theme_color": "#0E6E64",
+    "description": "Fechaí — divida contas, assinaturas e caixinhas com quem importa.",
     "orientation": "portrait-primary",
     "prefer_related_applications": false,
     "icons": [

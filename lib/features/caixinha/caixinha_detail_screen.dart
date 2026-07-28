@@ -2055,8 +2055,6 @@ class _HistorySectionState extends State<_HistorySection> {
                 const SizedBox(width: 8),
                 Text('${all.length}', style: theme.textTheme.bodySmall),
                 const Spacer(),
-                Text('rendeu ${Money.format(widget.c.totalEarnings)}', style: theme.textTheme.bodySmall),
-                const SizedBox(width: 4),
                 AnimatedRotation(
                   turns: _open ? 0.5 : 0,
                   duration: const Duration(milliseconds: 180),

@@ -6,12 +6,28 @@ class WhatsApp {
   WhatsApp._();
 
   /// Monta a URL `https://wa.me/<phone>?text=<msg>`.
-  /// [phone] só dígitos, com DDI (ex.: 5511999998888). Se vazio, abre sem destinatário.
+  /// [phone] só dígitos; o DDI é garantido por [normalizePhone]. Se vazio, abre
+  /// sem destinatário.
   static Uri buildUri({required String message, String? phone}) {
-    final digits = (phone ?? '').replaceAll(RegExp(r'\D'), '');
+    final digits = normalizePhone(phone);
     final encoded = Uri.encodeComponent(message);
     final base = digits.isEmpty ? 'https://wa.me/' : 'https://wa.me/$digits';
     return Uri.parse('$base?text=$encoded');
+  }
+
+  /// Garante o DDI do Brasil (`55`) no número usado no `wa.me`. Os cadastros
+  /// guardam só DDD + número (ex.: `11999998888`), e sem o DDI o WhatsApp lê o
+  /// `11` como país inválido e diz que a pessoa "não está cadastrada".
+  /// Retorna só dígitos, prontos para o `wa.me`, ou vazio se não houver número.
+  static String normalizePhone(String? phone) {
+    final d = (phone ?? '').replaceAll(RegExp(r'\D'), '');
+    if (d.isEmpty) return '';
+    // Já tem DDI 55 + DDD (2) + número (8 ou 9) → 12 ou 13 dígitos.
+    if (d.startsWith('55') && (d.length == 12 || d.length == 13)) return d;
+    // DDD (2) + número (8 fixo ou 9 celular) → prefixa o DDI.
+    if (d.length == 10 || d.length == 11) return '55$d';
+    // Qualquer outro formato (já internacional, incompleto): melhor esforço.
+    return d;
   }
 
   /// Abre o WhatsApp. Retorna false se não foi possível lançar.

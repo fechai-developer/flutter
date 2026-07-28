@@ -10,6 +10,7 @@ import '../../core/widgets/member_name.dart';
 import '../../core/widgets/money_text.dart';
 import '../../core/widgets/user_name.dart';
 import '../../core/widgets/wave_card.dart';
+import '../../data/models/caixinha.dart';
 import '../../data/models/expense_group.dart';
 import '../../data/models/person.dart';
 import '../../data/models/subscription.dart';
@@ -27,6 +28,7 @@ class HomeScreen extends ConsumerWidget {
     final user = ref.watch(currentUserProvider);
     final groups = ref.watch(groupsProvider);
     final subs = ref.watch(subscriptionsProvider);
+    final caixinhas = ref.watch(caixinhasProvider);
 
     return Scaffold(
       body: SafeArea(
@@ -34,6 +36,7 @@ class HomeScreen extends ConsumerWidget {
           onRefresh: () async {
             ref.invalidate(groupsProvider);
             ref.invalidate(subscriptionsProvider);
+            ref.invalidate(caixinhasProvider);
             ref.invalidate(pendingInvitesProvider);
           },
           child: ListView(
@@ -75,7 +78,7 @@ class HomeScreen extends ConsumerWidget {
               const _PendingInvitesBanner(),
 
               // Card de saldo (gradiente + corte de onda) — assinatura visual
-              _BalanceCard(groups: groups, subs: subs),
+              _BalanceCard(groups: groups, subs: subs, caixinhas: caixinhas),
               const SizedBox(height: 28),
 
               // Atalhos
@@ -108,8 +111,8 @@ class HomeScreen extends ConsumerWidget {
               ),
               const SizedBox(height: 28),
 
-              // Pendências de assinatura (próximos vencimentos / atrasos)
-              _PendingSubscriptions(subs: subs),
+              // Pendências consolidadas: contas, assinaturas e caixinha.
+              _Pendencias(groups: groups, subs: subs, caixinhas: caixinhas),
               const SizedBox(height: 28),
 
               // Feed de atividade recente (#5)
@@ -435,12 +438,17 @@ class _InviteCard extends ConsumerWidget {
 class _BalanceCard extends StatelessWidget {
   final AsyncValue<List<ExpenseGroup>> groups;
   final AsyncValue<List<Subscription>> subs;
-  const _BalanceCard({required this.groups, required this.subs});
+  final AsyncValue<List<Caixinha>> caixinhas;
+  const _BalanceCard({required this.groups, required this.subs, required this.caixinhas});
 
   @override
   Widget build(BuildContext context) {
     // Saldo consolidado do usuário: a receber (grupos onde é credor +
     // cotas de assinatura pendentes que é dono) − a pagar.
+    //
+    // A caixinha NÃO entra neste número de propósito: aqui é dinheiro
+    // interpessoal a acertar (rota "Acertar"); a poupança é patrimônio, de
+    // natureza diferente — aparece só no chip ao lado.
     double toReceive = 0;
     double toPay = 0;
 
@@ -465,6 +473,7 @@ class _BalanceCard extends StatelessWidget {
     });
 
     final net = toReceive - toPay;
+    final caixinhaStatus = _CaixinhaStatus.of(caixinhas.valueOrNull ?? const []);
 
     return GestureDetector(
       onTap: () => context.go('/charge'),
@@ -490,10 +499,117 @@ class _BalanceCard extends StatelessWidget {
             ),
             const SizedBox(height: 20),
             Row(
+              crossAxisAlignment: CrossAxisAlignment.end,
               children: [
                 _MiniStat(label: 'A receber', value: toReceive, icon: AppIconsFill.arrowDown),
                 const SizedBox(width: 24),
                 _MiniStat(label: 'A pagar', value: toPay, icon: AppIconsFill.arrowUp),
+                if (caixinhaStatus != null) ...[
+                  const Spacer(),
+                  _CaixinhaChip(status: caixinhaStatus),
+                ],
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// Situação resumida das caixinhas do usuário, para o chip do card de saldo:
+/// quanto ele tem guardado (patrimônio) e se há cota/empréstimo em atraso ou a
+/// pagar. Só considera as obrigações do PRÓPRIO usuário.
+class _CaixinhaStatus {
+  final double guardado; // patrimônio do usuário somado das caixinhas
+  final bool overdue; // alguma cota em atraso ou empréstimo vencido
+  final bool pending; // cota deste mês / empréstimo a pagar (sem atraso)
+  const _CaixinhaStatus({required this.guardado, required this.overdue, required this.pending});
+
+  /// Retorna null quando o usuário não participa de nenhuma caixinha (esconde o chip).
+  static _CaixinhaStatus? of(List<Caixinha> list) {
+    if (list.isEmpty) return null;
+    final now = DateTime.now();
+    double guardado = 0;
+    bool overdue = false;
+    bool pending = false;
+    var participa = false;
+    for (final c in list) {
+      final me = c.memberById('me');
+      final contribui = me?.contributes ?? false;
+      if (contribui) {
+        participa = true;
+        if (c.isOpen) {
+          guardado += c.balanceOf('me');
+          final arrears = c.cotaArrearsOf('me', now: now);
+          if (arrears.isLate) {
+            overdue = true;
+          } else if (c.cotaPendingThisMonth('me', now) > 0.005) {
+            pending = true;
+          }
+        }
+      }
+      // Empréstimos em que o usuário é o tomador (vale mesmo p/ externo).
+      for (final l in c.loans) {
+        if (l.borrowerPersonId != 'me') continue;
+        if (c.outstandingOf(l) <= 0.005) continue;
+        participa = true;
+        if (l.dueDate != null && l.dueDate!.isBefore(now)) {
+          overdue = true;
+        } else {
+          pending = true;
+        }
+      }
+    }
+    if (!participa) return null;
+    return _CaixinhaStatus(guardado: guardado, overdue: overdue, pending: pending);
+  }
+}
+
+/// Chip discreto no canto direito do card de saldo: patrimônio na caixinha +
+/// um ponto de status (em dia / a pagar / atraso). Toca → aba Caixinha.
+class _CaixinhaChip extends StatelessWidget {
+  final _CaixinhaStatus status;
+  const _CaixinhaChip({required this.status});
+
+  @override
+  Widget build(BuildContext context) {
+    final (dot, label) = status.overdue
+        ? (AppColors.coralAceso, 'atraso')
+        : status.pending
+            ? (Colors.white, 'a pagar')
+            : (AppColors.mentaViva, 'em dia');
+
+    return GestureDetector(
+      onTap: () => context.go('/caixinhas'),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+        decoration: BoxDecoration(
+          color: Colors.white.withValues(alpha: 0.14),
+          borderRadius: BorderRadius.circular(999),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.end,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(AppIconsFill.piggyBank, size: 13, color: Colors.white.withValues(alpha: 0.9)),
+                const SizedBox(width: 5),
+                Text(
+                  Money.format(status.guardado),
+                  style: AppTheme.moneyStyle(fontSize: 13, color: Colors.white),
+                ),
+              ],
+            ),
+            const SizedBox(height: 3),
+            Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Container(width: 6, height: 6, decoration: BoxDecoration(color: dot, shape: BoxShape.circle)),
+                const SizedBox(width: 5),
+                Text(label, style: TextStyle(color: Colors.white.withValues(alpha: 0.85), fontSize: 11, fontWeight: FontWeight.w600)),
               ],
             ),
           ],
@@ -567,50 +683,198 @@ class _QuickAction extends StatelessWidget {
   }
 }
 
-class _PendingSubscriptions extends StatelessWidget {
+enum _Kind { conta, assinatura, caixinha }
+
+/// Uma pendência exibida na Home, já normalizada de qualquer feature.
+class _PendingItem {
+  final _Kind kind;
+  final String emoji;
+  final String title; // nome da conta / serviço / caixinha
+  final String subtitle; // sempre nomeia o próprio tipo ("Conta · ...", etc.)
+  final double amount;
+  final bool credit; // true = a receber (cobrar), false = a pagar
+  final bool overdue; // atrasado → destaque coral, vai pro topo
+  final DateTime? due; // vencimento, quando conhecido (ordena "vence antes")
+  final String route;
+  const _PendingItem({
+    required this.kind,
+    required this.emoji,
+    required this.title,
+    required this.subtitle,
+    required this.amount,
+    required this.credit,
+    required this.route,
+    this.overdue = false,
+    this.due,
+  });
+}
+
+/// Bloco unificado de pendências: junta contas, assinaturas e caixinha numa só
+/// lista priorizada (atrasado primeiro, depois por vencimento e valor). Cada
+/// linha nomeia seu próprio tipo — nada genérico é chamado de "assinatura".
+class _Pendencias extends StatelessWidget {
+  final AsyncValue<List<ExpenseGroup>> groups;
   final AsyncValue<List<Subscription>> subs;
-  const _PendingSubscriptions({required this.subs});
+  final AsyncValue<List<Caixinha>> caixinhas;
+  const _Pendencias({required this.groups, required this.subs, required this.caixinhas});
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    return subs.when(
-      skipLoadingOnReload: true, // mantém o bloco visível durante a rebusca
-      loading: () => const Center(child: Padding(padding: EdgeInsets.all(24), child: CircularProgressIndicator())),
-      error: (e, _) => Text('Erro: $e'),
-      data: (list) {
-        final pending = list.where((s) => s.pendingThisCycle > 0).toList();
-        if (pending.isEmpty) {
-          return _EmptyHint(
-            icon: AppIcons.checkCircle,
-            text: 'Tudo em dia com as assinaturas 🎉',
-          );
-        }
-        return Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text('Precisa cobrar', style: theme.textTheme.titleLarge),
-            const SizedBox(height: 4),
-            Text('Cotas pendentes neste ciclo', style: theme.textTheme.bodySmall),
-            const SizedBox(height: 12),
-            for (final s in pending)
-              _PendingRow(sub: s),
-          ],
-        );
-      },
+    final items = _collect(
+      groups: groups.valueOrNull ?? const [],
+      subs: subs.valueOrNull ?? const [],
+      caixinhas: caixinhas.valueOrNull ?? const [],
     );
+
+    if (items.isEmpty) {
+      final loadingFirst = (!groups.hasValue && groups.isLoading) ||
+          (!subs.hasValue && subs.isLoading) ||
+          (!caixinhas.hasValue && caixinhas.isLoading);
+      if (loadingFirst) {
+        return const Center(child: Padding(padding: EdgeInsets.all(24), child: CircularProgressIndicator()));
+      }
+      return _EmptyHint(icon: AppIcons.checkCircle, text: 'Tudo em dia por aqui ✨');
+    }
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text('Pendências', style: theme.textTheme.titleLarge),
+        const SizedBox(height: 4),
+        Text('O que precisa da sua atenção', style: theme.textTheme.bodySmall),
+        const SizedBox(height: 12),
+        for (final it in items) _PendingCard(item: it),
+      ],
+    );
+  }
+
+  static List<_PendingItem> _collect({
+    required List<ExpenseGroup> groups,
+    required List<Subscription> subs,
+    required List<Caixinha> caixinhas,
+  }) {
+    final now = DateTime.now();
+    final items = <_PendingItem>[];
+
+    // Contas: saldo líquido do usuário no grupo (credor = a receber).
+    for (final g in groups) {
+      if (g.viewerRemoved) continue;
+      final net = BalanceCalculator.netBalances(g)['me'] ?? 0;
+      if (net > 0.009) {
+        items.add(_PendingItem(
+          kind: _Kind.conta, emoji: g.emoji, title: g.name,
+          subtitle: 'Conta · a receber', amount: net, credit: true,
+          route: '/groups/${g.id}',
+        ));
+      } else if (net < -0.009) {
+        items.add(_PendingItem(
+          kind: _Kind.conta, emoji: g.emoji, title: g.name,
+          subtitle: 'Conta · você deve', amount: -net, credit: false,
+          route: '/groups/${g.id}',
+        ));
+      }
+    }
+
+    // Assinaturas: dono cobra as cotas do ciclo; membro paga a própria cota.
+    for (final s in subs) {
+      if (s.viewerRemoved) continue;
+      if (s.ownerId == 'me') {
+        if (s.pendingThisCycle > 0.009) {
+          final overdue = s.activeMembers.any((m) => m.status == QuotaStatus.overdue);
+          final n = s.activeMembers.where((m) => m.status != QuotaStatus.paid).length;
+          items.add(_PendingItem(
+            kind: _Kind.assinatura, emoji: s.emoji, title: s.serviceName,
+            subtitle: overdue
+                ? 'Assinatura · $n pendente(s), há atraso'
+                : 'Assinatura · $n cota(s) a receber',
+            amount: s.pendingThisCycle, credit: true, overdue: overdue,
+            route: '/subscriptions/${s.id}',
+          ));
+        }
+      } else {
+        final mine = s.members
+            .where((m) => m.person.id == 'me' && !m.removed && m.status != QuotaStatus.paid)
+            .toList();
+        if (mine.isNotEmpty) {
+          final overdue = mine.any((m) => m.status == QuotaStatus.overdue);
+          final amount = mine.fold(0.0, (a, m) => a + m.amountDue(s.monthlyInterestPct));
+          items.add(_PendingItem(
+            kind: _Kind.assinatura, emoji: s.emoji, title: s.serviceName,
+            subtitle: overdue ? 'Assinatura · sua cota em atraso' : 'Assinatura · sua cota',
+            amount: amount, credit: false, overdue: overdue,
+            route: '/subscriptions/${s.id}',
+          ));
+        }
+      }
+    }
+
+    // Caixinha: obrigações do PRÓPRIO usuário (cota do mês/atraso + empréstimo
+    // que ele pegou). Cobrança dos outros fica na tela da caixinha.
+    for (final c in caixinhas) {
+      final me = c.memberById('me');
+      if ((me?.contributes ?? false) && c.isOpen) {
+        final arrears = c.cotaArrearsOf('me', now: now);
+        if (arrears.isLate) {
+          final n = arrears.months;
+          items.add(_PendingItem(
+            kind: _Kind.caixinha, emoji: c.emoji, title: c.name,
+            subtitle: 'Caixinha · cota em atraso${n > 0 ? ' · $n ${n == 1 ? 'mês' : 'meses'}' : ''}',
+            amount: arrears.total, credit: false, overdue: true,
+            due: arrears.oldestDue, route: '/caixinhas/${c.id}',
+          ));
+        } else {
+          final cur = c.cotaPendingThisMonth('me', now);
+          if (cur > 0.005) {
+            items.add(_PendingItem(
+              kind: _Kind.caixinha, emoji: c.emoji, title: c.name,
+              subtitle: 'Caixinha · cota deste mês', amount: cur, credit: false,
+              route: '/caixinhas/${c.id}',
+            ));
+          }
+        }
+      }
+      for (final l in c.loans) {
+        if (l.borrowerPersonId != 'me') continue;
+        final out = c.outstandingOf(l);
+        if (out <= 0.005) continue;
+        final overdue = l.dueDate != null && l.dueDate!.isBefore(now);
+        items.add(_PendingItem(
+          kind: _Kind.caixinha, emoji: c.emoji, title: c.name,
+          subtitle: overdue ? 'Caixinha · empréstimo vencido' : 'Caixinha · empréstimo a pagar',
+          amount: out, credit: false, overdue: overdue, due: l.dueDate,
+          route: '/caixinhas/${c.id}',
+        ));
+      }
+    }
+
+    items.sort((a, b) {
+      if (a.overdue != b.overdue) return a.overdue ? -1 : 1;
+      final ad = a.due, bd = b.due;
+      if (ad != null && bd != null) {
+        final cmp = ad.compareTo(bd);
+        if (cmp != 0) return cmp;
+      } else if (ad != null) {
+        return -1;
+      } else if (bd != null) {
+        return 1;
+      }
+      return b.amount.compareTo(a.amount);
+    });
+    return items;
   }
 }
 
-class _PendingRow extends StatelessWidget {
-  final Subscription sub;
-  const _PendingRow({required this.sub});
+class _PendingCard extends StatelessWidget {
+  final _PendingItem item;
+  const _PendingCard({required this.item});
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final overdue = sub.members.any((m) => m.status == QuotaStatus.overdue);
-    final pendingCount = sub.members.where((m) => m.status != QuotaStatus.paid).length;
+    final amountColor = item.overdue
+        ? AppColors.coralAceso
+        : (item.credit ? AppColors.verdeAguaProfundo : AppColors.coralAceso);
 
     return Padding(
       padding: const EdgeInsets.only(bottom: 10),
@@ -619,34 +883,40 @@ class _PendingRow extends StatelessWidget {
         borderRadius: BorderRadius.circular(AppTheme.cardRadius),
         child: InkWell(
           borderRadius: BorderRadius.circular(AppTheme.cardRadius),
-          onTap: () => context.go('/subscriptions/${sub.id}'),
+          onTap: () => context.go(item.route),
           child: Container(
             padding: const EdgeInsets.all(14),
             decoration: BoxDecoration(
               borderRadius: BorderRadius.circular(AppTheme.cardRadius),
-              border: Border.all(color: overdue ? AppColors.coralAceso.withValues(alpha: 0.5) : AppColors.areiaNeutra),
+              border: Border.all(
+                color: item.overdue ? AppColors.coralAceso.withValues(alpha: 0.5) : AppColors.areiaNeutra,
+              ),
             ),
             child: Row(
               children: [
-                Text(sub.emoji, style: const TextStyle(fontSize: 26)),
+                Text(item.emoji, style: const TextStyle(fontSize: 26)),
                 const SizedBox(width: 12),
                 Expanded(
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text(sub.serviceName, style: theme.textTheme.titleMedium),
+                      Text(item.title, style: theme.textTheme.titleMedium),
                       Text(
-                        overdue
-                            ? '$pendingCount pendente(s) · há atraso'
-                            : '$pendingCount cota(s) a receber',
+                        item.subtitle,
                         style: theme.textTheme.bodySmall?.copyWith(
-                          color: overdue ? AppColors.coralAceso : null,
+                          color: item.overdue ? AppColors.coralAceso : null,
                         ),
                       ),
                     ],
                   ),
                 ),
-                MoneyText(sub.pendingThisCycle, fontSize: 16, color: overdue ? AppColors.coralAceso : AppColors.verdeAguaProfundo),
+                Icon(
+                  item.credit ? AppIconsFill.arrowDown : AppIconsFill.arrowUp,
+                  size: 13,
+                  color: item.credit ? AppColors.verdeAguaProfundo : AppColors.coralAceso,
+                ),
+                const SizedBox(width: 2),
+                MoneyText(item.amount, fontSize: 16, color: amountColor),
                 const SizedBox(width: 4),
                 Icon(AppIcons.caretRight, size: 18, color: theme.colorScheme.onSurface.withValues(alpha: 0.4)),
               ],

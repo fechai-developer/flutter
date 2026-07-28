@@ -190,7 +190,7 @@ class _PersonRow extends ConsumerWidget {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      UserName(balance.person.name, style: theme.textTheme.titleMedium, maxLines: 1),
+                      UserName(balance.person.fullName, style: theme.textTheme.titleMedium, maxLines: 1),
                       Row(
                         children: [
                           if (balance.hasOverdue) ...[
@@ -273,7 +273,7 @@ class _PersonSheet extends ConsumerWidget {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text(balance.person.name, style: theme.textTheme.titleLarge, maxLines: 1, overflow: TextOverflow.ellipsis),
+                      Text(balance.person.fullName, style: theme.textTheme.titleLarge, maxLines: 1, overflow: TextOverflow.ellipsis),
                       Text(
                         balance.net > 0
                             ? 'te deve ${Money.format(balance.net)} no total'
