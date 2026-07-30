@@ -68,6 +68,9 @@ class Subscription {
   final String ownerId;
   final List<SubscriptionMember> members;
 
+  /// Tipo (categoria) da assinatura — texto livre sugerido (core/categories.dart).
+  final String? category;
+
   /// true = o usuário logado foi removido desta assinatura (acesso
   /// somente-leitura). Dispara o modo "Arquivado" na UI.
   final bool viewerRemoved;
@@ -83,6 +86,7 @@ class Subscription {
     required this.ownerId,
     required this.members,
     this.viewerRemoved = false,
+    this.category,
   });
 
   /// Cota "cheia" quando o custo é dividido igualmente pelo nº de cotas.
@@ -116,6 +120,7 @@ class Subscription {
     double? monthlyInterestPct,
     List<SubscriptionMember>? members,
     bool? viewerRemoved,
+    String? category,
   }) =>
       Subscription(
         id: id,
@@ -128,5 +133,6 @@ class Subscription {
         ownerId: ownerId,
         members: members ?? this.members,
         viewerRemoved: viewerRemoved ?? this.viewerRemoved,
+        category: category ?? this.category,
       );
 }

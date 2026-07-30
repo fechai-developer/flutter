@@ -132,14 +132,16 @@ class _CreateCaixinhaScreenState extends ConsumerState<CreateCaixinhaScreen> {
             quotas: {'me': _q('me'), for (final m in _members) m.id: _q(m.id)},
             openingBalances: opening,
             treasurers: _treasurers,
-            startDate: _startDate,
+            // "Do zero" começa hoje; só "em andamento" usa o início escolhido.
+            startDate: _inProgress ? _startDate : DateTime.now(),
             endDate: _endDate,
             paymentDay: int.tryParse(_paymentDayController.text.trim())?.clamp(1, 31),
           );
       if (!mounted) return;
       final router = GoRouter.of(context);
       Navigator.of(context).pop(); // fecha a janela (modal)
-      router.go('/caixinhas/${created.id}');
+      // "Já em andamento" abre com o guia de preenchimento do histórico.
+      router.go('/caixinhas/${created.id}${_inProgress ? '?guide=1' : ''}');
     } catch (e) {
       if (!mounted) return;
       setState(() => _saving = false);
@@ -149,7 +151,7 @@ class _CreateCaixinhaScreenState extends ConsumerState<CreateCaixinhaScreen> {
     }
   }
 
-  static const _stepTitles = ['A caixinha', 'Situação', 'Participantes'];
+  static const _stepTitles = ['A caixinha', 'Período', 'Participantes'];
 
   void _snack(String msg) =>
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
@@ -165,6 +167,11 @@ class _CreateCaixinhaScreenState extends ConsumerState<CreateCaixinhaScreen> {
         _snack('Informe o valor da cota por participante');
         return false;
       }
+      final day = int.tryParse(_paymentDayController.text.trim());
+      if (day == null || day < 1 || day > 31) {
+        _snack('Informe o dia de vencimento da cota (1 a 31)');
+        return false;
+      }
     }
     return true;
   }
@@ -176,7 +183,7 @@ class _CreateCaixinhaScreenState extends ConsumerState<CreateCaixinhaScreen> {
 
   Widget _currentStep(ThemeData theme) => switch (_step) {
         0 => _stepBasico(theme),
-        1 => _stepSituacao(theme),
+        1 => _stepPeriodo(theme),
         _ => _stepParticipantes(theme),
       };
 
@@ -275,30 +282,11 @@ class _CreateCaixinhaScreenState extends ConsumerState<CreateCaixinhaScreen> {
               helperMaxLines: 2,
             ),
           ),
-          const SizedBox(height: 12),
-          TextField(
-            controller: _paymentDayController,
-            keyboardType: TextInputType.number,
-            inputFormatters: [FilteringTextInputFormatter.digitsOnly, LengthLimitingTextInputFormatter(2)],
-            decoration: const InputDecoration(
-              labelText: 'Dia do pagamento (todo mês)',
-              hintText: 'ex.: 10',
-              helperText: 'A partir desse dia, a cota não paga passa a render juros (como empréstimo). Opcional.',
-              helperMaxLines: 3,
-            ),
-          ),
-          const SizedBox(height: 24),
-          _InterestField(value: _interest, onChanged: (v) => setState(() => _interest = v)),
-        ],
-      );
-
-  // ---------- Etapa 2: situação (nova vs. em andamento) + período ----------
-  Widget _stepSituacao(ThemeData theme) => ListView(
-        padding: const EdgeInsets.fromLTRB(20, 8, 20, 24),
-        shrinkWrap: true,
-        children: [
-          Text('A caixinha já está rolando?', style: theme.textTheme.titleLarge),
-          const SizedBox(height: 12),
+          const SizedBox(height: 20),
+          // Situação (nova vs. em andamento) fica aqui, junto do valor, porque é
+          // ela que muda a lógica de como os aportes entram.
+          Text('A caixinha já está rolando?', style: theme.textTheme.labelLarge),
+          const SizedBox(height: 8),
           SegmentedButton<bool>(
             segments: const [
               ButtonSegment(value: false, label: Text('Começar do zero')),
@@ -308,47 +296,79 @@ class _CreateCaixinhaScreenState extends ConsumerState<CreateCaixinhaScreen> {
             showSelectedIcon: false,
             onSelectionChanged: (s) => setState(() => _inProgress = s.first),
           ),
-          if (_inProgress) ...[
-            const SizedBox(height: 12),
-            Container(
-              padding: const EdgeInsets.all(12),
-              decoration: BoxDecoration(
-                color: AppColors.mentaViva.withValues(alpha: 0.15),
-                borderRadius: BorderRadius.circular(12),
-              ),
-              child: Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Icon(AppIcons.info, size: 18, color: AppColors.verdeAguaProfundo),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: Text(
-                      'Na próxima etapa você informa o saldo que cada um já tem hoje (com os '
-                      'rendimentos). O app fotografa isso como ponto de partida e conta a partir de '
-                      'agora — o passado fica travado.',
-                      style: theme.textTheme.bodySmall,
-                    ),
-                  ),
-                ],
-              ),
+          const SizedBox(height: 10),
+          Container(
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: AppColors.mentaViva.withValues(alpha: 0.15),
+              borderRadius: BorderRadius.circular(12),
             ),
-          ],
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Icon(AppIcons.info, size: 18, color: AppColors.verdeAguaProfundo),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    _inProgress
+                        ? 'Já roda: na etapa dos participantes você informa o saldo atual de cada um '
+                            '(a foto de hoje) e, no período, quando ela começou. Movimentações antigas '
+                            '(ex.: um empréstimo do passado) dá pra registrar depois, com a data certa.'
+                        : 'Nova: começa hoje. Você lança o aporte de cada um a cada mês, daqui pra frente.',
+                    style: theme.textTheme.bodySmall,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 12),
+          TextField(
+            controller: _paymentDayController,
+            keyboardType: TextInputType.number,
+            inputFormatters: [FilteringTextInputFormatter.digitsOnly, LengthLimitingTextInputFormatter(2)],
+            decoration: const InputDecoration(
+              labelText: 'Dia do vencimento (todo mês)',
+              hintText: 'ex.: 10',
+              helperText: 'A partir desse dia, a cota não paga passa a render juros (como empréstimo).',
+              helperMaxLines: 3,
+            ),
+          ),
           const SizedBox(height: 24),
+          _InterestField(value: _interest, onChanged: (v) => setState(() => _interest = v)),
+        ],
+      );
+
+  // ---------- Etapa 2: período (início só quando já em andamento) + fim ----------
+  Widget _stepPeriodo(ThemeData theme) => ListView(
+        padding: const EdgeInsets.fromLTRB(20, 8, 20, 24),
+        shrinkWrap: true,
+        children: [
+          Text(
+            _inProgress
+                ? 'Quando a caixinha começou e até quando vai (se tiver prazo).'
+                : 'A caixinha começa hoje. Defina só até quando vai, se tiver prazo.',
+            style: theme.textTheme.bodySmall,
+          ),
+          const SizedBox(height: 16),
           Text('Período', style: theme.textTheme.labelLarge),
           const SizedBox(height: 8),
           Row(
             children: [
-              Expanded(
-                child: _DateField(
-                  label: 'Primeira parcela',
-                  value: _startDate,
-                  onTap: () async {
-                    final d = await _pickDate(_startDate);
-                    if (d != null) setState(() => _startDate = d);
-                  },
+              // "Do zero" começa hoje: não precisa escolher o início. "Já em
+              // andamento" escolhe quando começou (pode ser no passado).
+              if (_inProgress) ...[
+                Expanded(
+                  child: _DateField(
+                    label: 'Quando começou',
+                    value: _startDate,
+                    onTap: () async {
+                      final d = await _pickDate(_startDate);
+                      if (d != null) setState(() => _startDate = d);
+                    },
+                  ),
                 ),
-              ),
-              const SizedBox(width: 12),
+                const SizedBox(width: 12),
+              ],
               Expanded(
                 child: _DateField(
                   label: 'Até (opcional)',

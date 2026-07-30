@@ -627,6 +627,151 @@ void main() {
     });
   });
 
+  group('Quitação parcial — o juro devido nunca some', () {
+    const me = Person(id: 'me', name: 'Você');
+    final agora = DateTime(2026, 4, 10); // jan..abr vencidos (dia 5)
+
+    Caixinha build({
+      List<Contribution> contribs = const [],
+      List<CotaInterestCharge> charges = const [],
+    }) =>
+        Caixinha(
+          id: 'q',
+          name: 'Q',
+          emoji: '🐷',
+          defaultInterestPct: 10,
+          monthlyQuota: 100,
+          paymentDay: 5,
+          createdAt: DateTime(2026, 1, 1),
+          members: const [CaixinhaMember(person: me, role: CaixinhaRole.owner)],
+          contributions: contribs,
+          cotaCharges: charges,
+        );
+
+    /// Aplica um plano (como a UI faz) e devolve a caixinha resultante.
+    Caixinha apply(Caixinha c, CotaSettlementPlan p, {String pid = 'me'}) {
+      final pagos = {for (final cp in p.chargePayments) cp.chargeId: cp.amount};
+      return c.copyWith(
+        contributions: [
+          ...c.contributions,
+          for (final f in p.fills)
+            Contribution(id: 'f${f.month.month}', personId: pid, amount: f.amount, date: c.dueDateOfMonth(f.month)),
+        ],
+        cotaCharges: [
+          for (final ch in c.cotaCharges)
+            if (pagos.containsKey(ch.id))
+              CotaInterestCharge(
+                id: ch.id,
+                memberId: ch.memberId,
+                amount: ch.amount,
+                paidAmount: ch.paidAmount + pagos[ch.id]!,
+                date: ch.date,
+              )
+            else
+              ch,
+          if (p.newCharge > 0.005)
+            CotaInterestCharge(id: 'novo', memberId: pid, amount: p.newCharge, date: agora),
+        ],
+      );
+    }
+
+    test('cenário base: 4 meses vencidos com juros compostos', () {
+      final a = build().cotaArrearsOf('me', now: agora);
+      expect(a.principal, closeTo(400, 0.01));
+      expect(a.interest, closeTo(64.10, 0.01)); // 0 + 10 + 21 + 33,10
+      expect(a.carriedInterest, 0);
+    });
+
+    test('pagar exatamente a cota do mês mais antigo NÃO apaga o juro dele', () {
+      final c = build();
+      final antes = c.cotaArrearsOf('me', now: agora);
+      final plan = c.planCotaSettlement('me', amount: 100, now: agora);
+
+      // O juro que deixou de ser derivável foi cristalizado, não perdido.
+      expect(plan.monthsCleared, 1);
+      expect(plan.interestPaid, 0);
+      expect(plan.freedInterest, closeTo(33.10, 0.01));
+      expect(plan.newCharge, closeTo(33.10, 0.01));
+
+      final depois = apply(c, plan).cotaArrearsOf('me', now: agora);
+      expect(depois.carriedInterest, closeTo(33.10, 0.01)); // segue no radar
+      // INVARIANTE: a dívida cai exatamente o que foi pago.
+      expect(depois.total, closeTo(antes.total - 100, 0.01));
+    });
+
+    test('invariante da conservação vale para vários valores parciais', () {
+      for (final valor in [50.0, 100.0, 150.0, 233.33, 400.0]) {
+        final c = build();
+        final antes = c.cotaArrearsOf('me', now: agora).total;
+        final plan = c.planCotaSettlement('me', amount: valor, now: agora);
+        final depois = apply(c, plan).cotaArrearsOf('me', now: agora).total;
+        expect(depois, closeTo(antes - valor, 0.01), reason: 'pagando $valor');
+        expect(plan.remainingDebt, closeTo(depois, 0.01), reason: 'prévia bate com o real ($valor)');
+      }
+    });
+
+    test('pagamento parcial de uma cota deixa o resto na própria cota', () {
+      final c = build();
+      final plan = c.planCotaSettlement('me', amount: 150, now: agora);
+      expect(plan.monthsCleared, 1); // jan inteiro
+      expect(plan.partialMonth, DateTime(2026, 1).month == 1 ? DateTime(2026, 2) : null);
+      expect(plan.partialAmount, closeTo(50, 0.01)); // 50 dos 100 de fevereiro
+      final depois = apply(c, plan);
+      // Fevereiro continua vencido, agora devendo só 50.
+      final fev = depois.overdueMonths('me', now: agora).firstWhere((e) => e.month.month == 2);
+      expect(fev.shortfall, closeTo(50, 0.01));
+    });
+
+    test('pagar tudo zera a dívida e não cristaliza nada', () {
+      final c = build();
+      final total = c.cotaArrearsOf('me', now: agora).total;
+      final plan = c.planCotaSettlement('me', amount: total, now: agora);
+      expect(plan.interestPaid, closeTo(64.10, 0.01)); // vira rendimento
+      expect(plan.newCharge, 0);
+      final depois = apply(c, plan).cotaArrearsOf('me', now: agora);
+      expect(depois.isLate, isFalse);
+    });
+
+    test('"pagou em dia" corrige o registro sem cobrar juros', () {
+      final c = build();
+      final plan = c.planCotaSettlement('me', amount: 100, chargeInterest: false, now: agora);
+      expect(plan.interestPaid, 0);
+      expect(plan.newCharge, 0); // perdoa (é correção, não cobrança)
+      final depois = apply(c, plan).cotaArrearsOf('me', now: agora);
+      expect(depois.principal, closeTo(300, 0.01));
+      expect(depois.interest, closeTo(31, 0.01));
+      expect(depois.carriedInterest, 0);
+    });
+
+    test('juro cristalizado é cobrado antes do novo e some ao ser pago', () {
+      final c = build(charges: [
+        CotaInterestCharge(id: 'velho', memberId: 'me', amount: 20, date: DateTime(2026, 3, 1)),
+      ]);
+      expect(c.cotaArrearsOf('me', now: agora).carriedInterest, closeTo(20, 0.01));
+      // Paga as 4 cotas (400) + 20 do juro velho.
+      final plan = c.planCotaSettlement('me', amount: 420, now: agora);
+      expect(plan.chargePayments.single.chargeId, 'velho');
+      expect(plan.chargePayments.single.amount, closeTo(20, 0.01));
+      final depois = apply(c, plan);
+      // O juro velho foi quitado; sobra só o que acabou de ser cristalizado.
+      expect(depois.cotaCharges.firstWhere((x) => x.id == 'velho').isSettled, isTrue);
+      expect(depois.carriedInterestOf('me'), closeTo(plan.newCharge, 0.01));
+    });
+
+    test('sem cota/vencimento, juro cristalizado continua devido', () {
+      final c = Caixinha(
+        id: 'sc', name: 'SC', emoji: '🐷',
+        createdAt: DateTime(2026, 1, 1),
+        members: const [CaixinhaMember(person: me, role: CaixinhaRole.owner)],
+        cotaCharges: [CotaInterestCharge(id: 'x', memberId: 'me', amount: 15, date: DateTime(2026, 2, 1))],
+      );
+      final a = c.cotaArrearsOf('me', now: agora);
+      expect(a.isLate, isTrue);
+      expect(a.interest, closeTo(15, 0.01));
+      expect(a.carriedInterest, closeTo(15, 0.01));
+    });
+  });
+
   group('Gráfico — projeção vai até o fim da caixinha', () {
     const me = Person(id: 'me', name: 'Você');
     Caixinha build({DateTime? end}) => Caixinha(

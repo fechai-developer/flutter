@@ -97,6 +97,10 @@ class Expense {
   /// a geração. Null nos moldes/avulsas.
   final DateTime? occurrencePeriod;
 
+  /// Tipo (categoria) do gasto — texto livre sugerido (ver core/categories.dart).
+  /// Null = sem tipo definido.
+  final String? category;
+
   const Expense({
     required this.id,
     required this.description,
@@ -111,6 +115,7 @@ class Expense {
     this.recurrenceReview = RecurrenceReview.none,
     this.recurrenceParentId,
     this.occurrencePeriod,
+    this.category,
   });
 
   bool get isRecurring => recurrence != Recurrence.none;
@@ -135,6 +140,7 @@ class Expense {
     RecurrenceReview recurrenceReview = RecurrenceReview.none,
     String? recurrenceParentId,
     DateTime? occurrencePeriod,
+    String? category,
   }) {
     return Expense(
       id: id,
@@ -155,6 +161,7 @@ class Expense {
       recurrenceReview: recurrenceReview,
       recurrenceParentId: recurrenceParentId,
       occurrencePeriod: occurrencePeriod,
+      category: category,
     );
   }
 
@@ -166,6 +173,7 @@ class Expense {
     required String paidByPersonId,
     required List<String> participantIds,
     required DateTime date,
+    String? category,
   }) {
     final n = participantIds.length;
     final base = (amount / n);
@@ -185,6 +193,7 @@ class Expense {
       type: SplitType.equal,
       shares: shares,
       date: date,
+      category: category,
     );
   }
 
@@ -201,6 +210,7 @@ class Expense {
     RecurrenceReview? recurrenceReview,
     String? recurrenceParentId,
     DateTime? occurrencePeriod,
+    String? category,
   }) =>
       Expense(
         id: id,
@@ -216,6 +226,7 @@ class Expense {
         recurrenceReview: recurrenceReview ?? this.recurrenceReview,
         recurrenceParentId: recurrenceParentId ?? this.recurrenceParentId,
         occurrencePeriod: occurrencePeriod ?? this.occurrencePeriod,
+        category: category ?? this.category,
       );
 
   Map<String, dynamic> toJson() => {
@@ -232,6 +243,7 @@ class Expense {
         'recurrence_review': recurrenceReview.name,
         'recurrence_parent_id': recurrenceParentId,
         'occurrence_period': occurrencePeriod?.toIso8601String(),
+        'category': category,
       };
 
   factory Expense.fromJson(Map<String, dynamic> json) => Expense(
@@ -252,5 +264,6 @@ class Expense {
         occurrencePeriod: json['occurrence_period'] != null
             ? DateTime.parse(json['occurrence_period'] as String)
             : null,
+        category: json['category'] as String?,
       );
 }

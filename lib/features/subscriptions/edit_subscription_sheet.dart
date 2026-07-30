@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../core/categories.dart';
 import '../../core/utils/currency.dart';
+import '../../core/widgets/category_picker.dart';
 import '../../core/widgets/emoji_picker.dart';
 import '../../core/widgets/interest_slider.dart';
 import '../../core/widgets/sheet_handle.dart';
@@ -34,6 +36,7 @@ class _EditSubscriptionSheetState extends ConsumerState<EditSubscriptionSheet> {
   late int _billingDay;
   late int _quotaCount;
   late double _interest;
+  String? _category;
   bool _saving = false;
 
   @override
@@ -46,6 +49,7 @@ class _EditSubscriptionSheetState extends ConsumerState<EditSubscriptionSheet> {
     _billingDay = s.billingDay;
     _quotaCount = s.quotaCount;
     _interest = s.monthlyInterestPct;
+    _category = s.category;
   }
 
   @override
@@ -77,6 +81,7 @@ class _EditSubscriptionSheetState extends ConsumerState<EditSubscriptionSheet> {
             billingDay: _billingDay,
             quotaCount: _quotaCount,
             monthlyInterestPct: _interest,
+            category: _category,
           );
       if (mounted) Navigator.of(context).pop();
     } catch (e) {
@@ -125,6 +130,15 @@ class _EditSubscriptionSheetState extends ConsumerState<EditSubscriptionSheet> {
                 keyboardType: const TextInputType.numberWithOptions(decimal: true),
                 onChanged: (_) => setState(() {}),
                 decoration: const InputDecoration(labelText: 'Valor total', prefixText: r'R$ '),
+              ),
+              const SizedBox(height: 20),
+              Text('Tipo', style: theme.textTheme.labelLarge),
+              const SizedBox(height: 8),
+              CategoryPicker(
+                categories: kSubscriptionCategories,
+                value: _category,
+                history: ref.watch(usedSubscriptionCategoriesProvider),
+                onChanged: (v) => setState(() => _category = v),
               ),
               const SizedBox(height: 20),
               Text('Dia de cobrança', style: theme.textTheme.labelLarge),

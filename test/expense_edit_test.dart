@@ -1,11 +1,16 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:intl/date_symbol_data_local.dart';
 import 'package:fechai/data/models/expense.dart';
 import 'package:fechai/data/models/expense_group.dart';
 import 'package:fechai/data/models/person.dart';
+import 'package:fechai/data/repositories/providers.dart';
 import 'package:fechai/features/groups/expense_sheet.dart';
 
 void main() {
+  setUpAll(() => initializeDateFormatting('pt_BR'));
+
   // Grupo mínimo com você + 2 pessoas.
   final group = ExpenseGroup(
     id: 'g',
@@ -21,8 +26,11 @@ void main() {
   );
 
   Future<void> pumpSheet(WidgetTester tester, Expense existing) async {
-    await tester.pumpWidget(MaterialApp(
-      home: Scaffold(body: ExpenseSheet(group: group, existing: existing)),
+    await tester.pumpWidget(ProviderScope(
+      overrides: [usedExpenseCategoriesProvider.overrideWithValue(const [])],
+      child: MaterialApp(
+        home: Scaffold(body: ExpenseSheet(group: group, existing: existing)),
+      ),
     ));
     await tester.pumpAndSettle();
   }
@@ -74,6 +82,52 @@ void main() {
       date: DateTime(2026, 7, 20),
     );
     await pumpSheet(tester, e);
+    expect(saveButton(tester).onPressed, isNotNull);
+  });
+
+  // Valores dos campos de participante, filtrados pelo sufixo do tipo atual.
+  List<String> inputsWithSuffix(WidgetTester tester, String suffix) =>
+      (tester.widgetList<TextField>(find.byType(TextField))
+              .where((f) => f.decoration?.suffixText == suffix)
+              .map((f) => f.controller?.text ?? '')
+              .toList())
+        ..sort();
+
+  testWidgets('editar por partes abre como razão reduzida (2,2,1), não R\$ (120,120,60)', (tester) async {
+    // 300 dividido 2:2:1 → shares 120,120,60. Ao reabrir deve mostrar 2,2,1.
+    final e = Expense.create(
+      id: 'e_w',
+      description: 'Rateio',
+      amount: 300,
+      paidByPersonId: 'me',
+      type: SplitType.weight,
+      participantIds: const ['me', 'p_ana', 'p_bru'],
+      inputs: const {'me': 2, 'p_ana': 2, 'p_bru': 1},
+      date: DateTime(2026, 7, 20),
+    );
+    await pumpSheet(tester, e);
+    expect(inputsWithSuffix(tester, 'x'), ['1', '2', '2']);
+    expect(find.text('120'), findsNothing);
+  });
+
+  testWidgets('trocar de Partes para Porcentagem converte proporcional (40/40/20)', (tester) async {
+    final e = Expense.create(
+      id: 'e_w2',
+      description: 'Rateio',
+      amount: 300,
+      paidByPersonId: 'me',
+      type: SplitType.weight,
+      participantIds: const ['me', 'p_ana', 'p_bru'],
+      inputs: const {'me': 2, 'p_ana': 2, 'p_bru': 1},
+      date: DateTime(2026, 7, 20),
+    );
+    await pumpSheet(tester, e);
+    await tester.ensureVisible(find.text('Porcentagem'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Porcentagem'));
+    await tester.pumpAndSettle();
+    // 120/300 = 40%, 60/300 = 20%.
+    expect(inputsWithSuffix(tester, '%'), ['20', '40', '40']);
     expect(saveButton(tester).onPressed, isNotNull);
   });
 }

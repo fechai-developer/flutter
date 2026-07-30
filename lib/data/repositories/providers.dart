@@ -165,6 +165,7 @@ class RepositoryController {
     int? billingDay,
     int? quotaCount,
     double? monthlyInterestPct,
+    String? category,
   }) async {
     await _repo.updateSubscription(
       id,
@@ -174,6 +175,7 @@ class RepositoryController {
       billingDay: billingDay,
       quotaCount: quotaCount,
       monthlyInterestPct: monthlyInterestPct,
+      category: category,
     );
     ref.invalidate(subscriptionsProvider);
   }
@@ -261,6 +263,28 @@ class RepositoryController {
     ref.invalidate(caixinhasProvider);
   }
 
+  /// Aplica o plano de quitação de cotas em atraso (ver `Caixinha.planCotaSettlement`).
+  Future<void> settleCotaArrears(
+    String caixinhaId, {
+    required String personId,
+    required List<({DateTime date, double amount})> contributions,
+    required double interestPaid,
+    required List<({String chargeId, double amount})> chargePayments,
+    required double newCharge,
+    DateTime? date,
+  }) async {
+    await _repo.settleCotaArrears(
+      caixinhaId,
+      personId: personId,
+      contributions: contributions,
+      interestPaid: interestPaid,
+      chargePayments: chargePayments,
+      newCharge: newCharge,
+      date: date,
+    );
+    ref.invalidate(caixinhasProvider);
+  }
+
   Future<void> setTreasurer(String caixinhaId, String personId, bool isTreasurer) async {
     await _repo.setTreasurer(caixinhaId, personId, isTreasurer);
     ref.invalidate(caixinhasProvider);
@@ -316,4 +340,31 @@ class RepositoryController {
 
 final repositoryControllerProvider = Provider<RepositoryController>((ref) {
   return RepositoryController(ref);
+});
+
+/// Tipos (categorias) que o usuário já usou nas despesas das contas ATIVAS —
+/// alimenta a "gaveta" de personalizadas no seletor de tipo. Ordenado A→Z.
+final usedExpenseCategoriesProvider = Provider<List<String>>((ref) {
+  final groups = ref.watch(groupsProvider).valueOrNull ?? const [];
+  final set = <String>{};
+  for (final g in groups) {
+    if (g.viewerRemoved) continue;
+    for (final e in g.expenses) {
+      final c = e.category?.trim();
+      if (c != null && c.isNotEmpty) set.add(c);
+    }
+  }
+  return set.toList()..sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
+});
+
+/// Idem para assinaturas ativas.
+final usedSubscriptionCategoriesProvider = Provider<List<String>>((ref) {
+  final subs = ref.watch(subscriptionsProvider).valueOrNull ?? const [];
+  final set = <String>{};
+  for (final s in subs) {
+    if (s.viewerRemoved) continue;
+    final c = s.category?.trim();
+    if (c != null && c.isNotEmpty) set.add(c);
+  }
+  return set.toList()..sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
 });

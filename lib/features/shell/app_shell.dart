@@ -26,6 +26,7 @@ class AppShell extends ConsumerStatefulWidget {
     _Dest('Contas', AppIcons.usersThree, AppIconsFill.usersThree),
     _Dest('Assinaturas', AppIcons.repeat, AppIconsFill.repeat),
     _Dest('Caixinha', AppIcons.piggyBank, AppIconsFill.piggyBank),
+    _Dest('Resumo', AppIcons.chartBar, AppIcons.chartBar),
   ];
 
   @override

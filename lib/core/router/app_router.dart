@@ -15,7 +15,7 @@ import '../../features/groups/groups_list_screen.dart';
 import '../../features/home/home_screen.dart';
 import '../../features/profile/profile_screen.dart';
 import '../../features/shell/app_shell.dart';
-import '../../features/stats/monthly_chart_screen.dart';
+import '../../features/stats/indicators_screen.dart';
 import '../../features/subscriptions/create_subscription_screen.dart';
 import '../../features/subscriptions/subscription_detail_screen.dart';
 import '../../features/subscriptions/subscriptions_list_screen.dart';
@@ -69,11 +69,7 @@ final routerProvider = Provider<GoRouter>((ref) {
         path: '/profile',
         builder: (context, state) => const ProfileScreen(),
       ),
-      GoRoute(
-        path: '/resumo',
-        builder: (context, state) => const MonthlyChartScreen(),
-      ),
-      // Shell com navegação persistente (4 abas — DESIGN_SYSTEM.md).
+      // Shell com navegação persistente (abas — DESIGN_SYSTEM.md).
       StatefulShellRoute.indexedStack(
         builder: (context, state, navShell) => AppShell(navigationShell: navShell),
         branches: [
@@ -126,11 +122,16 @@ final routerProvider = Provider<GoRouter>((ref) {
               routes: [
                 GoRoute(
                   path: ':id',
-                  builder: (context, state) =>
-                      CaixinhaDetailScreen(caixinhaId: state.pathParameters['id']!),
+                  builder: (context, state) => CaixinhaDetailScreen(
+                    caixinhaId: state.pathParameters['id']!,
+                    showGuide: state.uri.queryParameters['guide'] == '1',
+                  ),
                 ),
               ],
             ),
+          ]),
+          StatefulShellBranch(routes: [
+            GoRoute(path: '/resumo', builder: (context, state) => const IndicatorsScreen()),
           ]),
         ],
       ),

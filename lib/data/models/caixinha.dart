@@ -316,23 +316,121 @@ class ProjectionResult {
   double get totalYield => totalProjected - totalContributed;
 }
 
+/// Juro de atraso **cristalizado**: quando a cota de um mês vencido é paga mas o
+/// juro que ela vinha gerando NÃO é pago junto, esse juro deixa de ser derivável
+/// (o mês não está mais em aberto) e vira uma dívida registrada aqui — assim ele
+/// não some do radar. É quitado depois, virando rendimento da caixinha.
+///
+/// [amount] é o juro devido; [paidAmount] o quanto dele já foi pago. Não volta a
+/// compor juros (já foi composto até a cristalização) — decisão de projeto para
+/// um grupo informal, documentada em `fechai-docs/CAIXINHA.md`.
+@immutable
+class CotaInterestCharge {
+  final String id;
+  final String memberId;
+  final double amount;
+  final double paidAmount;
+  final DateTime date;
+  final String? note;
+  final String? recordedBy;
+
+  const CotaInterestCharge({
+    required this.id,
+    required this.memberId,
+    required this.amount,
+    this.paidAmount = 0,
+    required this.date,
+    this.note,
+    this.recordedBy,
+  });
+
+  /// Quanto ainda falta pagar deste juro.
+  double get outstanding {
+    final o = amount - paidAmount;
+    return o < 0.005 ? 0 : double.parse(o.toStringAsFixed(2));
+  }
+
+  bool get isSettled => outstanding <= 0.005;
+}
+
 /// Situação de atraso das cotas de um participante: quanto de cota venceu e não
-/// foi paga ([principal]) e os juros acumulados sobre esse atraso ([interest]),
-/// compostos ao mês como um empréstimo. [months] é o nº de meses vencidos em
-/// aberto; [oldestDue] é o 1º mês em atraso.
+/// foi paga ([principal]) e os juros devidos ([interest]) — que somam os juros
+/// ainda deriváveis dos meses em aberto (compostos ao mês, como um empréstimo)
+/// com os juros já cristalizados ([carriedInterest], ver [CotaInterestCharge]).
+/// [months] é o nº de meses vencidos em aberto; [oldestDue] é o 1º mês em atraso.
 @immutable
 class CotaArrears {
   final double principal;
   final double interest;
   final int months;
   final DateTime? oldestDue;
-  const CotaArrears({required this.principal, required this.interest, required this.months, this.oldestDue});
+
+  /// Parcela de [interest] que já foi cristalizada (dívida registrada), isto é,
+  /// não depende mais dos meses em aberto.
+  final double carriedInterest;
+
+  const CotaArrears({
+    required this.principal,
+    required this.interest,
+    required this.months,
+    this.oldestDue,
+    this.carriedInterest = 0,
+  });
 
   static const none = CotaArrears(principal: 0, interest: 0, months: 0);
+
+  /// Juros ainda deriváveis dos meses em aberto (o que some se eles forem pagos).
+  double get derivedInterest {
+    final d = interest - carriedInterest;
+    return d < 0 ? 0 : double.parse(d.toStringAsFixed(2));
+  }
 
   double get total => principal + interest;
   bool get isLate => total > 0.005;
   bool get hasInterest => interest > 0.005;
+}
+
+/// Plano de uma quitação de cotas em atraso: o que será lançado se o valor
+/// informado for confirmado. Puro (não escreve nada) — a UI mostra a prévia com
+/// os mesmos números que serão gravados. Ver [Caixinha.planCotaSettlement].
+@immutable
+class CotaSettlementPlan {
+  /// Aportes a lançar, datados no vencimento de cada mês (mais antigo primeiro).
+  final List<({DateTime month, double amount})> fills;
+
+  /// Juros efetivamente pagos agora (viram rendimento da caixinha).
+  final double interestPaid;
+
+  /// Abatimentos em cobranças de juro já cristalizadas (mais antigas primeiro).
+  final List<({String chargeId, double amount})> chargePayments;
+
+  /// Juro que deixou de ser derivável (a cota saiu do atraso) e NÃO foi pago —
+  /// vira uma cobrança cristalizada para não sumir do radar.
+  final double newCharge;
+
+  final double principalPaid;
+  final double freedInterest;
+  final double interestDue;
+  final double remainingDebt;
+  final int monthsCleared;
+  final DateTime? partialMonth;
+  final double partialAmount;
+
+  const CotaSettlementPlan({
+    required this.fills,
+    required this.interestPaid,
+    required this.chargePayments,
+    required this.newCharge,
+    required this.principalPaid,
+    required this.freedInterest,
+    required this.interestDue,
+    required this.remainingDebt,
+    required this.monthsCleared,
+    this.partialMonth,
+    this.partialAmount = 0,
+  });
+
+  bool get isEmpty => fills.isEmpty && interestPaid <= 0.005;
 }
 
 /// Um ponto mensal da evolução da caixinha: quanto foi aportado (sem
@@ -402,6 +500,9 @@ class Caixinha {
   final List<MemberExit> exits;
   final List<Adjustment> adjustments;
 
+  /// Juros de atraso já cristalizados (devidos mesmo com a cota paga).
+  final List<CotaInterestCharge> cotaCharges;
+
   const Caixinha({
     required this.id,
     required this.name,
@@ -422,6 +523,7 @@ class Caixinha {
     this.loanPayments = const [],
     this.exits = const [],
     this.adjustments = const [],
+    this.cotaCharges = const [],
   });
 
   bool get isOwner => ownerId == 'me';
@@ -513,7 +615,10 @@ class Caixinha {
     final ref = now ?? DateTime.now();
     final start = DateTime(periodStart.year, periodStart.month);
     final end = DateTime(ref.year, ref.month);
-    final ativos = contributingMembers.where((m) => m.inviteAccepted).toList();
+    // Inclui convidados pendentes: o dono/tesoureiro acompanha quem adicionou
+    // mesmo sem aceite (grupo de confiança / migração do caderno). Só exclui
+    // quem recusou.
+    final ativos = contributingMembers.where((m) => !m.inviteDeclined).toList();
     final result = <DateTime>[];
     for (var d = start; !d.isAfter(end); d = DateTime(d.year, d.month + 1)) {
       final pending = onlyMe
@@ -537,9 +642,27 @@ class Caixinha {
   /// valor entra no saldo devedor e, a cada mês seguinte em aberto, os juros
   /// (`defaultInterestPct`) incidem sobre o saldo — compostos, como se a pessoa
   /// fosse "pegando emprestado" a diferença. Requer [paymentDay] definido.
+  /// Juros de atraso cristalizados e ainda não pagos de um participante.
+  double carriedInterestOf(String personId) => double.parse(cotaCharges
+      .where((x) => x.memberId == personId)
+      .fold(0.0, (a, x) => a + x.outstanding)
+      .toStringAsFixed(2));
+
+  /// Cobranças de juro cristalizado em aberto (mais antigas primeiro) — a
+  /// quitação abate nesta ordem.
+  List<CotaInterestCharge> openCotaChargesOf(String personId) =>
+      (cotaCharges.where((x) => x.memberId == personId && !x.isSettled).toList()
+        ..sort((a, b) => a.date.compareTo(b.date)));
+
   CotaArrears cotaArrearsOf(String personId, {DateTime? now}) {
+    final carried = carriedInterestOf(personId);
     final q = suggestedAporteFor(personId);
-    if (q <= 0 || paymentDay == null) return CotaArrears.none;
+    if (q <= 0 || paymentDay == null) {
+      // Sem cota/vencimento não há novo atraso, mas juro já cristalizado continua devido.
+      return carried <= 0.005
+          ? CotaArrears.none
+          : CotaArrears(principal: 0, interest: carried, months: 0, carriedInterest: carried);
+    }
     final ref = now ?? DateTime.now();
     final today = DateTime(ref.year, ref.month, ref.day);
     final i = defaultInterestPct / 100;
@@ -573,9 +696,11 @@ class Caixinha {
     }
     return CotaArrears(
       principal: double.parse(principal.toStringAsFixed(2)),
-      interest: double.parse(interest.toStringAsFixed(2)),
+      // Juros devidos = o que ainda deriva dos meses em aberto + o cristalizado.
+      interest: double.parse((interest + carried).toStringAsFixed(2)),
       months: months,
       oldestDue: oldest,
+      carriedInterest: carried,
     );
   }
 
@@ -598,6 +723,107 @@ class Caixinha {
       if (short > 0.005) out.add((month: DateTime(y, m), shortfall: double.parse(short.toStringAsFixed(2))));
     }
     return out;
+  }
+
+  /// Data de vencimento da cota de um mês (dia do pagamento, ajustado a meses curtos).
+  DateTime dueDateOfMonth(DateTime month) => _annivIn(month.year, month.month);
+
+  /// Monta o plano de uma quitação de [amount] para [personId] — quem paga aos
+  /// poucos. O valor abate os meses vencidos **do mais antigo para o mais novo**
+  /// (o que sobrar fica de parcial na cota seguinte) e só depois os juros.
+  ///
+  /// A regra que mantém o modelo justo: ao pagar a cota de um mês vencido, o
+  /// juro que aquele mês vinha gerando deixa de ser derivável — se ele NÃO foi
+  /// pago junto, vira uma cobrança cristalizada ([CotaSettlementPlan.newCharge]).
+  /// Assim o juro devido nunca é perdido, mesmo em pagamento parcial.
+  ///
+  /// Com [chargeInterest] `false` ("pagou em dia"), o juro dos meses corrigidos é
+  /// perdoado — é uma correção de registro, não uma cobrança. Juros já
+  /// cristalizados continuam devidos nos dois modos.
+  CotaSettlementPlan planCotaSettlement(
+    String personId, {
+    required double amount,
+    bool chargeInterest = true,
+    DateTime? now,
+  }) {
+    final ref = now ?? DateTime.now();
+    final before = cotaArrearsOf(personId, now: ref);
+    var rem = amount <= 0 ? 0.0 : amount;
+
+    // 1) Principal: meses vencidos, do mais antigo ao mais novo.
+    final fills = <({DateTime month, double amount})>[];
+    var monthsCleared = 0;
+    DateTime? partialMonth;
+    var partialAmount = 0.0;
+    for (final om in overdueMonths(personId, now: ref)) {
+      if (rem <= 0.005) break;
+      final pay = double.parse(math.min(rem, om.shortfall).toStringAsFixed(2));
+      if (pay <= 0.005) break;
+      rem -= pay;
+      fills.add((month: om.month, amount: pay));
+      if (pay >= om.shortfall - 0.005) {
+        monthsCleared++;
+      } else {
+        partialMonth = om.month;
+        partialAmount = pay;
+      }
+    }
+    final principalPaid = double.parse(fills.fold(0.0, (a, f) => a + f.amount).toStringAsFixed(2));
+
+    // 2) Juro que deixa de ser derivável por causa desses aportes (delta exato,
+    // usando a própria conta de `cotaArrearsOf` sobre uma cópia hipotética).
+    var freed = 0.0;
+    if (fills.isNotEmpty) {
+      final hipo = copyWith(contributions: [
+        ...contributions,
+        for (final f in fills)
+          Contribution(id: '_plan', personId: personId, amount: f.amount, date: dueDateOfMonth(f.month)),
+      ]);
+      freed = before.derivedInterest - hipo.cotaArrearsOf(personId, now: ref).derivedInterest;
+      if (freed < 0.005) freed = 0;
+      freed = double.parse(freed.toStringAsFixed(2));
+    }
+
+    // 3) Juros: paga o cristalizado (mais antigo primeiro) e depois o liberado.
+    final interestDue = chargeInterest
+        ? double.parse((before.carriedInterest + freed).toStringAsFixed(2))
+        : 0.0;
+    final interestPaid = double.parse(math.min(rem, interestDue).toStringAsFixed(2));
+    rem -= interestPaid;
+
+    var left = interestPaid;
+    final chargePayments = <({String chargeId, double amount})>[];
+    if (chargeInterest) {
+      for (final ch in openCotaChargesOf(personId)) {
+        if (left <= 0.005) break;
+        final p = double.parse(math.min(left, ch.outstanding).toStringAsFixed(2));
+        left -= p;
+        chargePayments.add((chargeId: ch.id, amount: p));
+      }
+    }
+    // O que sobrou de `interestPaid` depois das cobranças antigas pagou o juro
+    // recém-liberado; o restante dele precisa ser cristalizado.
+    final newCharge = chargeInterest
+        ? double.parse(math.max(0.0, freed - left).toStringAsFixed(2))
+        : 0.0;
+
+    // "Pagou em dia" perdoa o juro dos meses corrigidos (correção de registro).
+    final forgiven = chargeInterest ? 0.0 : freed;
+    final remaining = before.total - principalPaid - interestPaid - forgiven;
+
+    return CotaSettlementPlan(
+      fills: fills,
+      interestPaid: interestPaid,
+      chargePayments: chargePayments,
+      newCharge: newCharge,
+      principalPaid: principalPaid,
+      freedInterest: freed,
+      interestDue: interestDue,
+      remainingDebt: double.parse(math.max(0.0, remaining).toStringAsFixed(2)),
+      monthsCleared: monthsCleared,
+      partialMonth: partialMonth,
+      partialAmount: partialAmount,
+    );
   }
 
   /// Série mensal para o gráfico de evolução: do início da caixinha até hoje
@@ -643,7 +869,9 @@ class Caixinha {
           ? (_monthIndex(endDate!) - endIx).clamp(0, 120)
           : projectMonths;
       final r = (projectionRatePct ?? defaultProjectionRatePct) / 100;
-      final active = contributingMembers.where((m) => m.inviteAccepted);
+      // Convidados pendentes contam na projeção (mesma regra das cotas): só quem
+      // recusou fica de fora.
+      final active = contributingMembers.where((m) => !m.inviteDeclined);
       final monthlyIn = active.fold(0.0, (a, m) => a + suggestedAporteFor(m.person.id));
       var pc = contribAcc, pp = patrAcc;
       for (var i = 1; i <= horizon; i++) {
@@ -884,6 +1112,7 @@ class Caixinha {
     List<LoanPayment>? loanPayments,
     List<MemberExit>? exits,
     List<Adjustment>? adjustments,
+    List<CotaInterestCharge>? cotaCharges,
   }) =>
       Caixinha(
         id: id,
@@ -905,5 +1134,6 @@ class Caixinha {
         loanPayments: loanPayments ?? this.loanPayments,
         exits: exits ?? this.exits,
         adjustments: adjustments ?? this.adjustments,
+        cotaCharges: cotaCharges ?? this.cotaCharges,
       );
 }

@@ -5,8 +5,10 @@ import '../../core/icons.dart';
 
 import 'package:uuid/uuid.dart';
 
+import '../../core/categories.dart';
 import '../../core/utils/currency.dart';
 import '../../core/utils/masks.dart';
+import '../../core/widgets/category_picker.dart';
 import '../../core/widgets/emoji_picker.dart';
 import '../../core/widgets/interest_slider.dart';
 import '../../core/widgets/known_members_picker.dart';
@@ -36,6 +38,7 @@ class _CreateSubscriptionScreenState extends ConsumerState<CreateSubscriptionScr
   int _billingDay = 15;
   int _quotaCount = 4;
   double _interest = 0;
+  String? _category;
   bool _saving = false;
 
   @override
@@ -114,6 +117,7 @@ class _CreateSubscriptionScreenState extends ConsumerState<CreateSubscriptionScr
       billingDay: _billingDay,
       quotaCount: _quotaCount,
       monthlyInterestPct: _interest,
+      category: _category,
       ownerId: 'me',
       members: [
         if (me != null)
@@ -174,6 +178,15 @@ class _CreateSubscriptionScreenState extends ConsumerState<CreateSubscriptionScr
             keyboardType: const TextInputType.numberWithOptions(decimal: true),
             onChanged: (_) => setState(() {}),
             decoration: const InputDecoration(labelText: 'Valor total do plano', prefixText: r'R$ '),
+          ),
+          const SizedBox(height: 20),
+          Text('Tipo', style: theme.textTheme.labelLarge),
+          const SizedBox(height: 8),
+          CategoryPicker(
+            categories: kSubscriptionCategories,
+            value: _category,
+            history: ref.watch(usedSubscriptionCategoriesProvider),
+            onChanged: (v) => setState(() => _category = v),
           ),
           const SizedBox(height: 24),
 

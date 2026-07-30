@@ -36,3 +36,20 @@ class InterestPolicy {
   static double interestOnly(double base, double pct, int monthsLate) =>
       double.parse((accrue(base, pct, monthsLate) - base).toStringAsFixed(2));
 }
+
+/// Limites do tipo (categoria) de gasto digitado pelo usuário — espelha o
+/// `check (char_length(category) <= 24)` da migration, para validar já na UI.
+class CategoryLimits {
+  CategoryLimits._();
+
+  /// Teto de caracteres de um tipo custom (bate com o banco).
+  static const int maxChars = 24;
+
+  /// Normaliza um tipo digitado: apara espaços e corta no teto. Vazio → null.
+  static String? sanitize(String? raw) {
+    if (raw == null) return null;
+    final t = raw.trim();
+    if (t.isEmpty) return null;
+    return t.length <= maxChars ? t : t.substring(0, maxChars);
+  }
+}

@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:fechai/core/utils/balance.dart';
 import 'package:fechai/data/models/expense.dart';
@@ -7,13 +8,17 @@ import 'package:fechai/data/models/person.dart';
 import 'package:fechai/data/models/subscription.dart';
 import 'package:fechai/core/utils/recurrence.dart';
 import 'package:fechai/data/repositories/in_memory_repository.dart';
+import 'package:fechai/data/repositories/providers.dart';
 import 'package:fechai/features/groups/expense_sheet.dart';
+import 'package:intl/date_symbol_data_local.dart';
 
 /// Remoção de membro com preservação de histórico.
 /// - Só remove quem está zerado.
 /// - Nunca teve movimentação → hard delete (some).
 /// - Já teve movimentação → soft (mantém no histórico).
 void main() {
+  setUpAll(() => initializeDateFormatting('pt_BR'));
+
   const ana = Person(id: 'p_ana', name: 'Ana', phone: '5511911112222');
   const bruno = Person(id: 'p_bruno', name: 'Bruno', phone: '5511933334444');
 
@@ -332,8 +337,11 @@ void main() {
         ],
       );
 
-      await tester.pumpWidget(MaterialApp(
-        home: Scaffold(body: ExpenseSheet(group: group, existing: group.expenses.first)),
+      await tester.pumpWidget(ProviderScope(
+        overrides: [usedExpenseCategoriesProvider.overrideWithValue(const [])],
+        child: MaterialApp(
+          home: Scaffold(body: ExpenseSheet(group: group, existing: group.expenses.first)),
+        ),
       ));
       await tester.pumpAndSettle();
 

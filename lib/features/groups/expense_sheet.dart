@@ -1,12 +1,16 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
 
+import '../../core/categories.dart';
 import '../../core/icons.dart';
 import '../../core/utils/currency.dart';
+import '../../core/widgets/category_picker.dart';
 import '../../core/widgets/member_avatar.dart';
 import '../../core/widgets/sheet_handle.dart';
 import '../../data/models/expense.dart';
 import '../../data/models/expense_group.dart';
+import '../../data/repositories/providers.dart';
 import '../../theme/app_theme.dart';
 
 /// Resultado da folha de despesa: salvar (add/edit) ou excluir.
@@ -29,24 +33,30 @@ Future<ExpenseSheetResult?> showExpenseSheet(
     context: context,
     isScrollControlled: true,
     backgroundColor: Colors.transparent,
+    // No computador o sheet do M3 trava em 640px e fica "fino": alargamos ~25%
+    // (800) para os tipos de despesa não quebrarem em tantas linhas. No celular
+    // (tela < 800) isto não restringe nada — segue ocupando a largura toda.
+    constraints: const BoxConstraints(maxWidth: 800),
     builder: (_) => ExpenseSheet(group: group, existing: existing),
   );
 }
 
-class ExpenseSheet extends StatefulWidget {
+class ExpenseSheet extends ConsumerStatefulWidget {
   final ExpenseGroup group;
   final Expense? existing;
   const ExpenseSheet({super.key, required this.group, this.existing});
 
   @override
-  State<ExpenseSheet> createState() => _ExpenseSheetState();
+  ConsumerState<ExpenseSheet> createState() => _ExpenseSheetState();
 }
 
-class _ExpenseSheetState extends State<ExpenseSheet> {
+class _ExpenseSheetState extends ConsumerState<ExpenseSheet> {
   late final TextEditingController _descController;
   late final TextEditingController _amountController;
   late String _paidBy;
   late SplitType _type;
+  String? _category;
+  late DateTime _date;
   late Set<String> _participants;
   bool _recurring = false;
   DateTime? _recurrenceUntil;
@@ -74,34 +84,79 @@ class _ExpenseSheetState extends State<ExpenseSheet> {
         ? rawPaidBy
         : (active.any((m) => m.id == 'me') ? 'me' : (active.isNotEmpty ? active.first.id : 'me'));
     _type = e?.type ?? SplitType.equal;
+    _category = e?.category;
+    // Data do lançamento: ao editar mantém a salva; ao criar, vem HOJE por padrão
+    // (o usuário pode alterar).
+    _date = e?.date ?? DateTime.now();
     _recurring = e?.isRecurring ?? false;
     _recurrenceUntil = e?.recurrenceUntil;
     // Dia da recorrência: usa o salvo; senão o dia do lançamento (limitado a 27).
-    _recurrenceDay = e?.recurrenceDay ?? (e?.date ?? DateTime(2026, 7, 20)).day.clamp(1, 27);
+    _recurrenceDay = e?.recurrenceDay ?? _date.day.clamp(1, 27);
     // Ao editar, tira do rateio quem foi removido → rebalanceia entre os ativos.
     _participants = e != null
         ? e.shares.keys.where((id) => !widget.group.isRemoved(id)).toSet()
         : active.map((m) => m.id).toSet();
 
-    // Ao EDITAR, repreenche os campos por pessoa a partir dos shares salvos —
-    // senão a soma zera e o botão Salvar trava (bug). Vale p/ todos os tipos
-    // que usam input (exato, partes e porcentagem); "igual" não usa campo.
+    // Cria os controllers vazios e, ao EDITAR, repreenche cada campo a partir dos
+    // shares salvos NO FORMATO do tipo original (partes voltam como razão reduzida
+    // — 2,2,1 em vez de 120,120,60 — e % como fatia real). Sem isso a soma zerava
+    // e o botão Salvar travava, e trocar de aba levava valores errados.
     for (final m in active) {
-      String initial = '';
-      if (e != null && e.shares.containsKey(m.id)) {
-        final share = e.shares[m.id]!;
-        if (e.type == SplitType.exact || e.type == SplitType.weight) {
-          // Exato: o próprio valor. Partes: pesos são relativos, então usar o
-          // valor (R$) como peso reproduz a mesma proporção ao recalcular.
-          initial = Money.plain(share);
-        } else if (e.type == SplitType.percentage) {
-          // % = fatia / total × 100 (precisão extra p/ a soma fechar ~100
-          // dentro da tolerância de validação).
-          initial = _pctText(e.amount > 0 ? share / e.amount * 100 : 0);
-        }
-      }
-      _inputs[m.id] = TextEditingController(text: initial);
+      _inputs[m.id] = TextEditingController();
     }
+    if (e != null) {
+      final seed = _inputsForType(e.type, e.shares, _participants.toList(), e.amount);
+      seed.forEach((id, txt) => _inputs[id]?.text = txt);
+    }
+  }
+
+  /// Texto de cada campo por pessoa que representa [shares] sob um dado [type].
+  /// Usado ao abrir (formato original) e ao trocar de aba (conversão proporcional).
+  static Map<String, String> _inputsForType(
+      SplitType type, Map<String, double> shares, List<String> ids, double amount) {
+    switch (type) {
+      case SplitType.equal:
+        return {for (final id in ids) id: ''};
+      case SplitType.exact:
+        return {for (final id in ids) id: Money.plain(shares[id] ?? 0)};
+      case SplitType.percentage:
+        return {for (final id in ids) id: _pctText(amount > 0 ? (shares[id] ?? 0) / amount * 100 : 0)};
+      case SplitType.weight:
+        // Pesos são relativos → reduz pra menor razão inteira (300 em 2:2:1 volta
+        // como 2,2,1, não 120,120,60). Base em centavos pra evitar float.
+        final cents = {for (final id in ids) id: ((shares[id] ?? 0) * 100).round()};
+        final nonzero = cents.values.where((c) => c > 0).toList();
+        if (nonzero.isEmpty) return {for (final id in ids) id: ''};
+        var g = nonzero.first;
+        for (final c in nonzero.skip(1)) {
+          g = _gcd(g, c);
+        }
+        if (g <= 0) g = 1;
+        return {for (final id in ids) id: cents[id]! > 0 ? '${cents[id]! ~/ g}' : '0'};
+    }
+  }
+
+  static int _gcd(int a, int b) {
+    a = a.abs();
+    b = b.abs();
+    while (b != 0) {
+      final t = b;
+      b = a % b;
+      a = t;
+    }
+    return a;
+  }
+
+  /// Troca o tipo de divisão convertendo os campos proporcionalmente a partir dos
+  /// shares atuais — o rateio efetivo se mantém ao alternar entre abas.
+  void _onTypeChanged(SplitType t) {
+    if (t == _type) return;
+    final current = _previewShares; // shares sob o tipo atual + inputs
+    final seed = _inputsForType(t, current, _participants.toList(), _amount);
+    setState(() {
+      _type = t;
+      seed.forEach((id, txt) => _inputs[id]?.text = txt);
+    });
   }
 
   @override
@@ -157,14 +212,14 @@ class _ExpenseSheetState extends State<ExpenseSheet> {
   void _save() {
     final expense = Expense.create(
       id: widget.existing?.id ??
-          'e_${DateTime(2026, 7, 20).microsecondsSinceEpoch}_${_descController.text.hashCode}',
+          'e_${DateTime.now().microsecondsSinceEpoch}_${_descController.text.hashCode}',
       description: _descController.text.trim(),
       amount: _amount,
       paidByPersonId: _paidBy,
       type: _type,
       participantIds: _participants.toList(),
       inputs: _rawInputs,
-      date: widget.existing?.date ?? DateTime(2026, 7, 20),
+      date: _date,
       recurrence: _recurring ? Recurrence.monthly : Recurrence.none,
       recurrenceUntil: _recurring ? _recurrenceUntil : null,
       recurrenceDay: _recurring ? _recurrenceDay : null,
@@ -172,12 +227,25 @@ class _ExpenseSheetState extends State<ExpenseSheet> {
       // e a geração recriaria aquele mês, duplicando).
       recurrenceParentId: widget.existing?.recurrenceParentId,
       occurrencePeriod: widget.existing?.occurrencePeriod,
+      category: _category,
     );
     Navigator.of(context).pop(ExpenseSheetResult.save(expense));
   }
 
+  Future<void> _pickDate() async {
+    final now = DateTime.now();
+    final picked = await showDatePicker(
+      context: context,
+      initialDate: _date,
+      firstDate: DateTime(now.year - 5),
+      lastDate: DateTime(now.year + 5),
+      helpText: 'Data da despesa',
+    );
+    if (picked != null) setState(() => _date = picked);
+  }
+
   Future<void> _pickUntil() async {
-    final now = DateTime(2026, 7, 20);
+    final now = DateTime.now();
     final picked = await showDatePicker(
       context: context,
       initialDate: _recurrenceUntil ?? DateTime(now.year, now.month + 3, now.day),
@@ -211,6 +279,7 @@ class _ExpenseSheetState extends State<ExpenseSheet> {
     final members = widget.group.activeMembers;
     final preview = _previewShares;
     final error = _splitError;
+    final usedCategories = ref.watch(usedExpenseCategoriesProvider);
 
     return Padding(
       padding: EdgeInsets.only(bottom: MediaQuery.viewInsetsOf(context).bottom),
@@ -256,6 +325,33 @@ class _ExpenseSheetState extends State<ExpenseSheet> {
                 onChanged: (_) => setState(() {}),
                 decoration: const InputDecoration(labelText: 'Valor', prefixText: r'R$ '),
               ),
+              const SizedBox(height: 12),
+              // Data da despesa — vem hoje por padrão, editável (#1).
+              InkWell(
+                onTap: _pickDate,
+                borderRadius: BorderRadius.circular(14),
+                child: InputDecorator(
+                  decoration: const InputDecoration(labelText: 'Data'),
+                  child: Row(
+                    children: [
+                      Icon(AppIconsFill.calendarBlank, size: 18, color: AppColors.verdeAguaProfundo),
+                      const SizedBox(width: 8),
+                      Text(DateFormat("d 'de' MMM 'de' y", 'pt_BR').format(_date)),
+                      const Spacer(),
+                      Text('Alterar', style: TextStyle(color: AppColors.verdeAguaProfundo, fontWeight: FontWeight.w600)),
+                    ],
+                  ),
+                ),
+              ),
+              const SizedBox(height: 20),
+              Text('Tipo', style: theme.textTheme.labelLarge),
+              const SizedBox(height: 8),
+              CategoryPicker(
+                categories: kExpenseCategories,
+                value: _category,
+                history: usedCategories,
+                onChanged: (v) => setState(() => _category = v),
+              ),
               const SizedBox(height: 20),
               Text('Quem pagou', style: theme.textTheme.labelLarge),
               const SizedBox(height: 8),
@@ -278,7 +374,7 @@ class _ExpenseSheetState extends State<ExpenseSheet> {
               const SizedBox(height: 8),
               _SplitTypeSelector(
                 selected: _type,
-                onChanged: (t) => setState(() => _type = t),
+                onChanged: _onTypeChanged,
               ),
               const SizedBox(height: 6),
               if (error != null)

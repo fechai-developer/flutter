@@ -6,6 +6,12 @@
       "runtimeExecutable": "python",
       "runtimeArgs": ["-m", "http.server", "8090", "--directory", "build/web"],
       "port": 8090
+    },
+    {
+      "name": "fechai-mock",
+      "runtimeExecutable": "flutter",
+      "runtimeArgs": ["run", "-d", "web-server", "--web-port", "8899", "--web-hostname", "127.0.0.1", "--dart-define=USE_SUPABASE=false"],
+      "port": 8899
     }
   ]
 }

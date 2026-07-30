@@ -61,6 +61,7 @@ class InMemoryRepository implements AppRepository {
           paidByPersonId: 'me',
           participantIds: ['me', 'p_ana', 'p_bruno', 'p_carla'],
           date: DateTime(2026, 7, 6),
+          category: 'Hospedagem',
         ),
         Expense.equalSplit(
           id: 'e2',
@@ -69,6 +70,7 @@ class InMemoryRepository implements AppRepository {
           paidByPersonId: 'p_ana',
           participantIds: ['me', 'p_ana', 'p_bruno', 'p_carla'],
           date: DateTime(2026, 7, 7),
+          category: 'Mercado',
         ),
         Expense.equalSplit(
           id: 'e3',
@@ -77,6 +79,34 @@ class InMemoryRepository implements AppRepository {
           paidByPersonId: 'p_bruno',
           participantIds: ['me', 'p_bruno', 'p_carla'],
           date: DateTime(2026, 7, 7),
+          category: 'Transporte',
+        ),
+        Expense.equalSplit(
+          id: 'e5',
+          description: 'Jantar no restaurante',
+          amount: 320,
+          paidByPersonId: 'me',
+          participantIds: ['me', 'p_ana', 'p_bruno', 'p_carla'],
+          date: DateTime(2026, 7, 8),
+          category: 'Restaurante',
+        ),
+        Expense.equalSplit(
+          id: 'e6',
+          description: 'Passeio de barco',
+          amount: 200,
+          paidByPersonId: 'p_ana',
+          participantIds: ['me', 'p_ana', 'p_carla'],
+          date: DateTime(2026, 7, 9),
+          category: 'Passeio',
+        ),
+        Expense.equalSplit(
+          id: 'e7',
+          description: 'Feira e petiscos',
+          amount: 96,
+          paidByPersonId: 'me',
+          participantIds: ['me', 'p_ana', 'p_bruno', 'p_carla'],
+          date: DateTime(2026, 7, 9),
+          category: 'Mercado',
         ),
       ],
     );
@@ -95,6 +125,7 @@ class InMemoryRepository implements AppRepository {
           paidByPersonId: 'me',
           participantIds: ['me', 'p_carla', 'p_diego'],
           date: DateTime(2026, 7, 10),
+          category: 'Casa',
         ),
       ],
     );
@@ -195,6 +226,7 @@ class InMemoryRepository implements AppRepository {
         quotaCount: 4,
         monthlyInterestPct: 1.0,
         ownerId: 'me',
+        category: 'Streaming',
         members: [
           SubscriptionMember(person: _me, quota: 13.98, status: QuotaStatus.paid),
           SubscriptionMember(person: ana, quota: 13.98, status: QuotaStatus.paid),
@@ -212,6 +244,7 @@ class InMemoryRepository implements AppRepository {
         quotaCount: 6,
         monthlyInterestPct: 0.0,
         ownerId: 'me',
+        category: 'Música',
         members: [
           SubscriptionMember(person: _me, quota: 5.82, status: QuotaStatus.paid),
           SubscriptionMember(person: diego, quota: 5.82, status: QuotaStatus.pending),
@@ -519,6 +552,7 @@ class InMemoryRepository implements AppRepository {
       monthlyInterestPct: withId.monthlyInterestPct,
       ownerId: _me.id,
       members: withId.members,
+      category: withId.category,
     );
     _subscriptions.insert(0, s);
     return _delay(s);
@@ -533,6 +567,7 @@ class InMemoryRepository implements AppRepository {
     int? billingDay,
     int? quotaCount,
     double? monthlyInterestPct,
+    String? category,
   }) {
     final idx = _subscriptions.indexWhere((s) => s.id == id);
     final updated = _subscriptions[idx].copyWith(
@@ -542,6 +577,7 @@ class InMemoryRepository implements AppRepository {
       billingDay: billingDay,
       quotaCount: quotaCount,
       monthlyInterestPct: monthlyInterestPct,
+      category: category,
     );
     _subscriptions[idx] = updated;
     return _delay(updated);
@@ -711,6 +747,67 @@ class InMemoryRepository implements AppRepository {
       _mutateCx(caixinhaId, (c) => c.copyWith(
             loans: c.loans.map((l) => l.id == loanId ? l.copyWith(principal: principal, interestPct: interestPct, date: date, dueDate: dueDate) : l).toList(),
           ));
+
+  @override
+  Future<Caixinha> settleCotaArrears(
+    String caixinhaId, {
+    required String personId,
+    required List<({DateTime date, double amount})> contributions,
+    required double interestPaid,
+    required List<({String chargeId, double amount})> chargePayments,
+    required double newCharge,
+    DateTime? date,
+  }) =>
+      _mutateCx(caixinhaId, (c) {
+        final when = date ?? DateTime.now();
+        final pagos = {for (final p in chargePayments) p.chargeId: p.amount};
+        return c.copyWith(
+          // Aportes retroativos: restauram a posição da pessoa naqueles meses.
+          contributions: [
+            ...c.contributions,
+            for (final f in contributions)
+              Contribution(id: _uuid.v4(), personId: personId, amount: f.amount, date: f.date, recordedBy: 'me'),
+          ],
+          // Juro pago vira rendimento da caixinha (dividido entre todos).
+          earnings: [
+            ...c.earnings,
+            if (interestPaid > 0.005)
+              Earning(
+                id: _uuid.v4(),
+                amount: interestPaid,
+                source: EarningSource.loanInterest,
+                date: when,
+                note: 'Juros por atraso — ${c.fullNameOf(personId)}',
+                recordedBy: 'me',
+              ),
+          ],
+          cotaCharges: [
+            for (final ch in c.cotaCharges)
+              if (pagos.containsKey(ch.id))
+                CotaInterestCharge(
+                  id: ch.id,
+                  memberId: ch.memberId,
+                  amount: ch.amount,
+                  paidAmount: ch.paidAmount + pagos[ch.id]!,
+                  date: ch.date,
+                  note: ch.note,
+                  recordedBy: ch.recordedBy,
+                )
+              else
+                ch,
+            // Juro que saiu do derivado sem ser pago: fica registrado como dívida.
+            if (newCharge > 0.005)
+              CotaInterestCharge(
+                id: _uuid.v4(),
+                memberId: personId,
+                amount: newCharge,
+                date: when,
+                note: 'Juros de atraso pendentes',
+                recordedBy: 'me',
+              ),
+          ],
+        );
+      });
 
   @override
   Future<Caixinha> recordLoanInterest(String caixinhaId, String loanId, double amount, {DateTime? date}) =>

@@ -60,7 +60,7 @@ class HomeScreen extends ConsumerWidget {
                   ),
                   IconButton(
                     onPressed: () => context.push('/resumo'),
-                    tooltip: 'Resumo',
+                    tooltip: 'Indicadores',
                     icon: Icon(AppIcons.chartBar, color: AppColors.verdeAguaProfundo),
                   ),
                   IconButton(

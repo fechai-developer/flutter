@@ -76,6 +76,7 @@ abstract class AppRepository {
     int? billingDay,
     int? quotaCount,
     double? monthlyInterestPct,
+    String? category,
   });
   Future<Subscription> setQuotaStatus(String subscriptionId, String personId, QuotaStatus status);
   Future<Subscription> addSubscriptionMember(String subscriptionId, SubscriptionMember member);
@@ -147,6 +148,22 @@ abstract class AppRepository {
   /// Registra um pagamento (parcial ou total) de um empréstimo. O saldo que
   /// sobrar continua acumulando juros. [date] default hoje.
   Future<Caixinha> addLoanPayment(String caixinhaId, String loanId, {required double amount, String? note, DateTime? date});
+  /// Aplica uma quitação de cotas em atraso (plano montado por
+  /// `Caixinha.planCotaSettlement`), em um passo só:
+  /// - [contributions]: aportes retroativos, já datados no vencimento de cada mês;
+  /// - [interestPaid]: juro efetivamente pago → vira rendimento da caixinha;
+  /// - [chargePayments]: abatimentos em juros já cristalizados;
+  /// - [newCharge]: juro que saiu do cálculo derivado sem ser pago → é
+  ///   cristalizado para continuar devido (não some do radar).
+  Future<Caixinha> settleCotaArrears(
+    String caixinhaId, {
+    required String personId,
+    required List<({DateTime date, double amount})> contributions,
+    required double interestPaid,
+    required List<({String chargeId, double amount})> chargePayments,
+    required double newCharge,
+    DateTime? date,
+  });
   /// Toggle de tesoureiro (só o dono pode eleger/remover).
   Future<Caixinha> setTreasurer(String caixinhaId, String personId, bool isTreasurer);
   /// Define quantas cotas um participante tem (multiplica o aporte sugerido).

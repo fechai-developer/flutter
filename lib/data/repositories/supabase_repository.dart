@@ -168,7 +168,7 @@ class SupabaseRepository implements AppRepository {
   static const _groupSelect =
       'id,name,emoji,owner_id,monthly_interest_pct,created_at,'
       'group_members(id,profile_id,name,last_name,phone,status,removed_at),'
-      'expenses(id,description,amount,paid_by,split_type,date,recurrence,recurrence_until,recurrence_day,recurrence_review,recurrence_parent_id,occurrence_period,expense_shares(member_id,share)),'
+      'expenses(id,description,amount,paid_by,split_type,date,recurrence,recurrence_until,recurrence_day,recurrence_review,recurrence_parent_id,occurrence_period,category,expense_shares(member_id,share)),'
       'payments(id,from_member,to_member,amount,created_at)';
 
   @override
@@ -232,6 +232,7 @@ class SupabaseRepository implements AppRepository {
         occurrencePeriod: e['occurrence_period'] != null
             ? DateTime.parse(e['occurrence_period'] as String)
             : null,
+        category: e['category'] as String?,
       ));
     }
 
@@ -326,6 +327,7 @@ class SupabaseRepository implements AppRepository {
           'recurrence_review': e.recurrenceReview.name,
           'recurrence_parent_id': e.recurrenceParentId,
           'occurrence_period': e.occurrencePeriod?.toIso8601String(),
+          'category': e.category,
         })
         .select('id')
         .single();
@@ -448,7 +450,7 @@ class SupabaseRepository implements AppRepository {
 
   // ----------------- Assinaturas -----------------
   static const _subSelect =
-      'id,service_name,emoji,total_amount,billing_day,quota_count,monthly_interest_pct,owner_id,'
+      'id,service_name,emoji,total_amount,billing_day,quota_count,monthly_interest_pct,owner_id,category,'
       'subscription_members(id,profile_id,name,last_name,phone,quota,status,months_late,invite_status,removed_at)';
 
   @override
@@ -495,6 +497,7 @@ class SupabaseRepository implements AppRepository {
       ownerId: s['owner_id'] == _uid ? 'me' : s['owner_id'] as String,
       members: members,
       viewerRemoved: viewerRemoved,
+      category: s['category'] as String?,
     );
   }
 
@@ -508,6 +511,7 @@ class SupabaseRepository implements AppRepository {
       'billing_day': subscription.billingDay,
       'quota_count': subscription.quotaCount,
       'monthly_interest_pct': subscription.monthlyInterestPct,
+      'category': subscription.category,
       'owner_id': _uid,
     }).select('id').single();
     final subId = s['id'] as String;
@@ -535,6 +539,7 @@ class SupabaseRepository implements AppRepository {
     int? billingDay,
     int? quotaCount,
     double? monthlyInterestPct,
+    String? category,
   }) async {
     await _c.from('subscriptions').update({
       if (serviceName != null) 'service_name': serviceName,
@@ -543,6 +548,7 @@ class SupabaseRepository implements AppRepository {
       if (billingDay != null) 'billing_day': billingDay,
       if (quotaCount != null) 'quota_count': quotaCount,
       if (monthlyInterestPct != null) 'monthly_interest_pct': monthlyInterestPct,
+      if (category != null) 'category': category,
     }).eq('id', id);
     return subscriptionById(id);
   }
@@ -604,7 +610,8 @@ class SupabaseRepository implements AppRepository {
       'caixinha_earnings(id,amount,source,loan_id,note,date,recorded_by),'
       'caixinha_loan_payments(id,loan_id,amount,note,date),'
       'caixinha_exits(id,member_id,refund,date,recorded_by),'
-      'caixinha_adjustments(id,member_id,delta,note,date,recorded_by)';
+      'caixinha_adjustments(id,member_id,delta,note,date,recorded_by),'
+      'caixinha_cota_charges(id,member_id,amount,paid_amount,note,date,recorded_by)';
 
   Caixinha _mapCaixinha(Map<String, dynamic> c) {
     final cms = (c['caixinha_members'] as List? ?? const []).cast<Map<String, dynamic>>();
@@ -687,6 +694,18 @@ class SupabaseRepository implements AppRepository {
       adjustments: [
         for (final x in (c['caixinha_adjustments'] as List? ?? const []).cast<Map<String, dynamic>>())
           Adjustment(id: x['id'] as String, memberId: person(x['member_id']), delta: (x['delta'] as num).toDouble(), note: x['note'] as String?, date: DateTime.parse(x['date'] as String), recordedBy: recorder(x['recorded_by'])),
+      ],
+      cotaCharges: [
+        for (final x in (c['caixinha_cota_charges'] as List? ?? const []).cast<Map<String, dynamic>>())
+          CotaInterestCharge(
+            id: x['id'] as String,
+            memberId: person(x['member_id']),
+            amount: (x['amount'] as num).toDouble(),
+            paidAmount: (x['paid_amount'] as num?)?.toDouble() ?? 0,
+            note: x['note'] as String?,
+            date: DateTime.parse(x['date'] as String),
+            recordedBy: recorder(x['recorded_by']),
+          ),
       ],
     );
   }
@@ -859,6 +878,58 @@ class SupabaseRepository implements AppRepository {
       if (date != null) 'date': date.toUtc().toIso8601String(),
       if (dueDate != null) 'due_date': dueDate.toIso8601String(),
     }).eq('id', loanId);
+    return caixinhaById(caixinhaId);
+  }
+
+  @override
+  Future<Caixinha> settleCotaArrears(
+    String caixinhaId, {
+    required String personId,
+    required List<({DateTime date, double amount})> contributions,
+    required double interestPaid,
+    required List<({String chargeId, double amount})> chargePayments,
+    required double newCharge,
+    DateTime? date,
+  }) async {
+    final memberId = personId == 'me' ? await _myCaixinhaMemberId(caixinhaId) : personId;
+    final when = date ?? DateTime.now();
+
+    // 1) Aportes retroativos (datados no vencimento de cada mês).
+    if (contributions.isNotEmpty) {
+      await _c.from('caixinha_contributions').insert([
+        for (final f in contributions)
+          {'caixinha_id': caixinhaId, 'member_id': memberId, 'amount': f.amount, 'date': f.date.toUtc().toIso8601String()},
+      ]);
+    }
+    // 2) Juro pago vira rendimento da caixinha.
+    if (interestPaid > 0.005) {
+      final nome = (await caixinhaById(caixinhaId)).fullNameOf(personId);
+      await _c.from('caixinha_earnings').insert({
+        'caixinha_id': caixinhaId,
+        'amount': interestPaid,
+        'source': 'loanInterest',
+        'note': 'Juros por atraso — $nome',
+        'date': when.toUtc().toIso8601String(),
+      });
+    }
+    // 3) Abate juros já cristalizados (paid_amount += valor).
+    for (final p in chargePayments) {
+      final row = await _c.from('caixinha_cota_charges').select('paid_amount').eq('id', p.chargeId).single();
+      final atual = (row['paid_amount'] as num?)?.toDouble() ?? 0;
+      await _c.from('caixinha_cota_charges').update({
+        'paid_amount': double.parse((atual + p.amount).toStringAsFixed(2)),
+      }).eq('id', p.chargeId);
+    }
+    // 4) Cristaliza o juro que saiu do derivado sem ter sido pago.
+    if (newCharge > 0.005) {
+      await _c.from('caixinha_cota_charges').insert({
+        'caixinha_id': caixinhaId,
+        'member_id': memberId,
+        'amount': newCharge,
+        'note': 'Juros de atraso pendentes',
+        'date': when.toUtc().toIso8601String(),
+      });
+    }
     return caixinhaById(caixinhaId);
   }
 

@@ -19,22 +19,47 @@ import '../../theme/app_theme.dart';
 import 'caixinha_report.dart';
 import 'edit_caixinha_sheet.dart';
 
-class CaixinhaDetailScreen extends ConsumerWidget {
+class CaixinhaDetailScreen extends ConsumerStatefulWidget {
   final String caixinhaId;
-  const CaixinhaDetailScreen({super.key, required this.caixinhaId});
+  /// Abre já com o guia de preenchimento (caixinha criada "já em andamento").
+  final bool showGuide;
+  const CaixinhaDetailScreen({super.key, required this.caixinhaId, this.showGuide = false});
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final async = ref.watch(caixinhaByIdProvider(caixinhaId));
+  ConsumerState<CaixinhaDetailScreen> createState() => _CaixinhaDetailScreenState();
+}
+
+class _CaixinhaDetailScreenState extends ConsumerState<CaixinhaDetailScreen> {
+  // Guia de preenchimento: abre só na PRIMEIRA vez (logo após criar a caixinha
+  // "já em andamento"). Depois só reabre pelo menu "Preencher histórico" —
+  // assim não fica aparecendo a cada visita.
+  late bool _showGuide = widget.showGuide;
+
+  static const _padding = EdgeInsets.fromLTRB(20, 12, 20, 96);
+
+  @override
+  Widget build(BuildContext context) {
+    final async = ref.watch(caixinhaByIdProvider(widget.caixinhaId));
 
     return async.when(
       skipLoadingOnReload: true, // não pisca ao rebuscar por evento de realtime
       loading: () => const Scaffold(body: Center(child: CircularProgressIndicator())),
       error: (e, _) => Scaffold(body: Center(child: Text('Erro: $e'))),
       // Tomador externo: visão restrita (só o próprio empréstimo + histórico).
-      data: (c) => (c.memberById('me')?.isBorrower ?? false)
-          ? _BorrowerScreen(c: c)
-          : Scaffold(
+      data: (c) => (c.memberById('me')?.isBorrower ?? false) ? _BorrowerScreen(c: c) : _scaffold(c),
+    );
+  }
+
+  Widget _scaffold(Caixinha c) {
+    // Badge da aba Quitação: quantas pessoas estão devendo (cota e/ou juros).
+    final atrasados = c.contributingMembers
+        .where((m) => !m.inviteDeclined && c.cotaArrearsOf(m.person.id).isLate)
+        .length;
+    final podeLancar = c.iAmTreasurer && c.isOpen;
+
+    return DefaultTabController(
+      length: 4,
+      child: Scaffold(
         appBar: AppBar(
           leading: IconButton(icon: Icon(AppIcons.arrowLeft), onPressed: () => context.go('/caixinhas')),
           title: Row(
@@ -54,178 +79,269 @@ class CaixinhaDetailScreen extends ConsumerWidget {
             if (c.isOwner)
               PopupMenuButton<String>(
                 onSelected: (v) {
+                  if (v == 'guide') setState(() => _showGuide = true);
                   if (v == 'close') _confirmClose(context, ref, c);
                   if (v == 'delete') _confirmDelete(context, ref, c);
                 },
                 itemBuilder: (_) => [
+                  if (c.isOpen) const PopupMenuItem(value: 'guide', child: Text('Preencher histórico')),
                   if (c.isOpen) const PopupMenuItem(value: 'close', child: Text('Encerrar e partilhar')),
                   const PopupMenuItem(value: 'delete', child: Text('Excluir caixinha')),
                 ],
               ),
           ],
+          bottom: TabBar(
+            isScrollable: true,
+            tabAlignment: TabAlignment.start,
+            tabs: [
+              const Tab(text: 'Início'),
+              Tab(child: _TabLabel(text: 'Quitação', badge: atrasados)),
+              Tab(child: _TabLabel(text: 'Empréstimos', badge: c.openLoans.length, subtle: true)),
+              const Tab(text: 'Histórico'),
+            ],
+          ),
         ),
-        body: ListView(
-          padding: const EdgeInsets.fromLTRB(20, 8, 20, 40),
+        // Lançamentos ficam num único botão flutuante — só dono/tesoureiro.
+        floatingActionButton: podeLancar ? _LancarFab(onSelected: (a) => _lancar(a, c)) : null,
+        body: TabBarView(
           children: [
-            // Patrimônio total
-            WaveCard(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(c.isClosed ? 'Patrimônio final' : 'Patrimônio da caixinha',
-                      style: const TextStyle(color: Colors.white70, fontSize: 14, fontWeight: FontWeight.w500)),
-                  const SizedBox(height: 6),
-                  Text(Money.format(c.patrimony), style: AppTheme.moneyStyle(fontSize: 36, color: Colors.white)),
-                  const SizedBox(height: 16),
-                  Wrap(
-                    spacing: 10,
-                    runSpacing: 8,
-                    children: [
-                      _WaveChip(
-                        icon: AppIconsFill.usersThree,
-                        label: '${c.memberCount} membros',
-                        onTap: () => _membersSheet(context, ref, c),
-                      ),
-                      _WaveChip(icon: AppIcons.percent, label: 'juros ${_pct(c.defaultInterestPct)}'),
-                      if (c.paymentDay != null)
-                        _WaveChip(icon: AppIconsFill.calendarBlank, label: 'todo dia ${c.paymentDay}'),
-                    ],
-                  ),
-                ],
-              ),
-            ),
-            const SizedBox(height: 12),
-            _PeriodLine(c: c),
-            const SizedBox(height: 12),
-
-            // Sua parte
-            _MyShareCard(c: c),
-            const SizedBox(height: 16),
-
-            // Resumo: caixa / emprestado / rendeu
-            Row(
-              children: [
-                Expanded(child: _Stat(label: 'Em caixa', value: c.cashOnHand, icon: AppIconsFill.coins)),
-                const SizedBox(width: 10),
-                Expanded(child: _Stat(label: 'Emprestado', value: c.outstandingReceivables, icon: AppIcons.handshake)),
-                const SizedBox(width: 10),
-                Expanded(child: _Stat(label: 'Rendeu', value: c.totalEarnings, icon: AppIcons.trendingUp, positive: true)),
-              ],
-            ),
-            const SizedBox(height: 20),
-
-            // Evolução do dinheiro (com × sem rendimento + projeção)
-            _EvolutionCard(c: c),
-
-            // Projeção (estimativa) + relatório em PDF
-            Row(
-              children: [
-                Expanded(
-                  child: OutlinedButton.icon(
-                    onPressed: () => _verProjecao(context, c),
-                    icon: Icon(AppIcons.trendingUp, size: 18),
-                    label: const Text('Projeção'),
-                  ),
-                ),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: OutlinedButton.icon(
-                    onPressed: () => _opcoesRelatorio(context, c),
-                    icon: Icon(AppIcons.pdf, size: 18),
-                    label: const Text('Relatório'),
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 20),
-
-            if (c.isClosed) _ClosedBanner(c: c),
-
-            // Ações do tesoureiro
-            if (c.iAmTreasurer && c.isOpen) ...[
-              _ActionsBar(
-                onAporte: () => _lancarAporte(context, ref, c),
-                onRendimento: () => _lancarRendimento(context, ref, c),
-                onEmprestimo: () => _novoEmprestimo(context, ref, c),
-              ),
-              const SizedBox(height: 20),
-            ],
-
-            // Partilha (só quando encerrada). Enquanto aberta, os membros ficam
-            // na janela acessível pelo contador no card de patrimônio.
-            if (c.isClosed) ...[
-              _SectionTitle(title: 'Partilha', trailing: '${c.memberCount}'),
-              const SizedBox(height: 8),
-              for (final m in _orderedMembers(c)) _MemberRow(c: c, member: m),
-              if (c.exitedMembers.isNotEmpty) ...[
-                const SizedBox(height: 8),
-                for (final m in c.exitedMembers) _ExitedRow(c: c, member: m),
-              ],
-              const SizedBox(height: 20),
-            ],
-
-            // Cotas do mês (quem já pagou / falta) — confirmar é do tesoureiro
-            if (c.isOpen && c.monthlyQuota > 0) ...[
-              _CotasSection(c: c, ref: ref),
-              const SizedBox(height: 20),
-            ],
-
-            // Empréstimos entre pessoas de confiança (registro informal)
-            _SectionTitle(title: 'Valores emprestados', trailing: c.openLoans.isEmpty ? null : '${c.openLoans.length} em aberto'),
-            const SizedBox(height: 8),
-            if (c.loans.isNotEmpty || (c.iAmTreasurer && c.isOpen)) const _OrganizerDisclaimer(),
-            if (c.loans.isEmpty)
-              _EmptyLine(text: 'Nada registrado aqui. Use pra anotar valores combinados entre pessoas de confiança.'),
-            for (final l in c.loans) _LoanRow(c: c, loan: l, ref: ref),
-            const SizedBox(height: 20),
-
-            // Histórico de movimentações (mais novo → mais antigo, paginado)
-            if (c.movements.isNotEmpty) _HistorySection(c: c),
+            _tabInicio(c),
+            _tabQuitacao(c),
+            _tabEmprestimos(c),
+            _tabHistorico(c),
           ],
         ),
       ),
     );
   }
 
+  void _lancar(_AcaoLancamento a, Caixinha c) {
+    switch (a) {
+      case _AcaoLancamento.aporte:
+        _lancarAporte(context, ref, c);
+      case _AcaoLancamento.rendimento:
+        _lancarRendimento(context, ref, c);
+      case _AcaoLancamento.emprestimo:
+        _novoEmprestimo(context, ref, c);
+    }
+  }
+
+  // ---------- Aba 1: Início (posição, evolução, relatórios) ----------
+  Widget _tabInicio(Caixinha c) => ListView(
+        padding: _padding,
+        children: [
+          // Guia de preenchimento (só na 1ª visita de uma caixinha migrada).
+          if (_showGuide && c.iAmTreasurer && c.isOpen)
+            _OnboardingGuide(
+              onCotas: () => _revisarCotas(context, c),
+              onRendimento: () => _lancarRendimento(context, ref, c),
+              onEmprestimo: () => _novoEmprestimo(context, ref, c),
+              onDismiss: () => setState(() => _showGuide = false),
+            ),
+          WaveCard(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(c.isClosed ? 'Patrimônio final' : 'Patrimônio da caixinha',
+                    style: const TextStyle(color: Colors.white70, fontSize: 14, fontWeight: FontWeight.w500)),
+                const SizedBox(height: 6),
+                Text(Money.format(c.patrimony), style: AppTheme.moneyStyle(fontSize: 36, color: Colors.white)),
+                const SizedBox(height: 16),
+                Wrap(
+                  spacing: 10,
+                  runSpacing: 8,
+                  children: [
+                    _WaveChip(
+                      icon: AppIconsFill.usersThree,
+                      label: '${c.memberCount} membros',
+                      onTap: () => _membersSheet(context, ref, c),
+                    ),
+                    _WaveChip(icon: AppIcons.percent, label: 'juros ${_pct(c.defaultInterestPct)}'),
+                    if (c.paymentDay != null)
+                      _WaveChip(icon: AppIconsFill.calendarBlank, label: 'todo dia ${c.paymentDay}'),
+                  ],
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 12),
+          _PeriodLine(c: c),
+          const SizedBox(height: 12),
+          _MyShareCard(c: c),
+          const SizedBox(height: 16),
+          Row(
+            children: [
+              Expanded(child: _Stat(label: 'Em caixa', value: c.cashOnHand, icon: AppIconsFill.coins)),
+              const SizedBox(width: 10),
+              Expanded(child: _Stat(label: 'Emprestado', value: c.outstandingReceivables, icon: AppIcons.handshake)),
+              const SizedBox(width: 10),
+              Expanded(child: _Stat(label: 'Rendeu', value: c.totalEarnings, icon: AppIcons.trendingUp, positive: true)),
+            ],
+          ),
+          const SizedBox(height: 20),
+          _EvolutionCard(c: c),
+          Row(
+            children: [
+              Expanded(
+                child: OutlinedButton.icon(
+                  onPressed: () => _verProjecao(context, c),
+                  icon: Icon(AppIcons.trendingUp, size: 18),
+                  label: const Text('Projeção'),
+                ),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: OutlinedButton.icon(
+                  onPressed: () => _opcoesRelatorio(context, c),
+                  icon: Icon(AppIcons.pdf, size: 18),
+                  label: const Text('Relatório'),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 20),
+          if (c.isClosed) ...[
+            _ClosedBanner(c: c),
+            _SectionTitle(title: 'Partilha', trailing: '${c.memberCount}'),
+            const SizedBox(height: 8),
+            for (final m in _orderedMembers(c)) _MemberRow(c: c, member: m),
+            if (c.exitedMembers.isNotEmpty)
+              for (final m in c.exitedMembers) _ExitedRow(c: c, member: m),
+          ],
+        ],
+      );
+
+  // ---------- Aba 2: Quitação (cotas mês a mês + atrasos com juros) ----------
+  Widget _tabQuitacao(Caixinha c) => ListView(
+        padding: _padding,
+        children: [
+          if (c.monthlyQuota <= 0)
+            _EmptyLine(text: 'Esta caixinha não tem valor de cota definido. Edite a caixinha para acompanhar as cotas.')
+          else ...[
+            _CotasSection(c: c, ref: ref),
+            const SizedBox(height: 24),
+          ],
+        ],
+      );
+
+  // ---------- Aba 3: Empréstimos ----------
+  Widget _tabEmprestimos(Caixinha c) => ListView(
+        padding: _padding,
+        children: [
+          _SectionTitle(title: 'Valores emprestados', trailing: c.openLoans.isEmpty ? null : '${c.openLoans.length} em aberto'),
+          const SizedBox(height: 8),
+          if (c.loans.isNotEmpty || (c.iAmTreasurer && c.isOpen)) const _OrganizerDisclaimer(),
+          if (c.loans.isEmpty)
+            _EmptyLine(text: 'Nada registrado aqui. Use pra anotar valores combinados entre pessoas de confiança.'),
+          for (final l in c.loans) _LoanRow(c: c, loan: l, ref: ref),
+        ],
+      );
+
+  // ---------- Aba 4: Histórico (extrato detalhado) ----------
+  Widget _tabHistorico(Caixinha c) {
+    final all = c.movements.reversed.toList(); // mais novo primeiro
+    return ListView.builder(
+      padding: _padding,
+      itemCount: all.isEmpty ? 1 : all.length + 1,
+      itemBuilder: (context, i) {
+        if (i == 0) {
+          return Padding(
+            padding: const EdgeInsets.only(bottom: 12),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                _SectionTitle(title: 'Histórico', trailing: all.isEmpty ? null : '${all.length} lançamentos'),
+                const SizedBox(height: 4),
+                Text('Tudo que mexeu no patrimônio: quem lançou, para quem, valor e o saldo antes → depois.',
+                    style: Theme.of(context).textTheme.bodySmall),
+                if (all.isEmpty) ...[
+                  const SizedBox(height: 12),
+                  _EmptyLine(text: 'Nenhum lançamento ainda.'),
+                ],
+              ],
+            ),
+          );
+        }
+        return _MovementCard(movement: all[i - 1]);
+      },
+    );
+  }
+
   // ---------- Ações (bottom sheets) ----------
 
   Future<void> _lancarAporte(BuildContext context, WidgetRef ref, Caixinha c) async {
-    final accepted = c.contributingMembers.where((m) => m.inviteAccepted).toList();
+    // Inclui convidados ainda pendentes (grupo de confiança / migração): o
+    // tesoureiro lança o aporte de quem adicionou, mesmo sem aceite ainda.
+    final elegiveis = c.contributingMembers.where((m) => !m.inviteDeclined).toList();
+    final now = DateTime.now();
     String personId = 'me';
     DateTime date = DateTime.now();
-    final amountCtrl = TextEditingController(text: c.suggestedAporteFor('me') > 0 ? Money.plain(c.suggestedAporteFor('me')) : '');
+    CotaArrears arrearsOf(String pid) => c.paymentDay == null ? CotaArrears.none : c.cotaArrearsOf(pid, now: now);
+    final amountCtrl = TextEditingController(
+        text: c.suggestedAporteFor('me') > 0 ? Money.plain(c.suggestedAporteFor('me')) : '');
     void suggest() {
       final v = c.suggestedAporteFor(personId);
-      if (v > 0) amountCtrl.text = Money.plain(v);
+      amountCtrl.text = v > 0 ? Money.plain(v) : '';
     }
-    final ok = await _sheet<bool>(context, 'Lançar aporte', (ctx, setSheet) => [
-          Text('De quem é o aporte?', style: Theme.of(ctx).textTheme.bodySmall),
-          const SizedBox(height: 8),
-          Wrap(
-            spacing: 8,
-            runSpacing: 8,
-            children: [
-              for (final m in accepted)
-                ChoiceChip(
-                  label: Text(m.person.id == 'me' ? 'Você' : m.person.name),
-                  selected: personId == m.person.id,
-                  onSelected: (_) => setSheet(() {
-                    personId = m.person.id;
-                    suggest();
-                  }),
+    final ok = await _sheet<bool>(context, 'Lançar aporte', (ctx, setSheet) {
+      final theme = Theme.of(ctx);
+      final arrears = arrearsOf(personId);
+      final name = personId == 'me' ? 'Você' : (c.memberById(personId)?.person.name ?? '');
+      return [
+        Text('De quem é o aporte?', style: theme.textTheme.bodySmall),
+        const SizedBox(height: 8),
+        Wrap(
+          spacing: 8,
+          runSpacing: 8,
+          children: [
+            for (final m in elegiveis)
+              ChoiceChip(
+                label: Text(m.person.id == 'me' ? 'Você' : m.person.name),
+                selected: personId == m.person.id,
+                onSelected: (_) => setSheet(() {
+                  personId = m.person.id;
+                  suggest();
+                }),
+              ),
+          ],
+        ),
+        const SizedBox(height: 16),
+        TextField(
+          controller: amountCtrl,
+          autofocus: true,
+          keyboardType: const TextInputType.numberWithOptions(decimal: true),
+          decoration: const InputDecoration(labelText: 'Valor do aporte', prefixText: r'R$ '),
+        ),
+        // Aviso: aporte comum entra na competência da data; cobrança de juros do
+        // atraso é na seção Quitações (fluxo próprio, justo, por meses inteiros).
+        if (arrears.isLate) ...[
+          const SizedBox(height: 10),
+          Container(
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: AppColors.coralAceso.withValues(alpha: 0.1),
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Icon(AppIcons.warningCircle, size: 16, color: AppColors.coralAceso),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    '$name está em atraso (${Money.format(arrears.total)}). Este aporte entra na '
+                    'competência da data escolhida. Para cobrar os juros do atraso, use "Quitações em atraso".',
+                    style: theme.textTheme.bodySmall,
+                  ),
                 ),
-            ],
+              ],
+            ),
           ),
-          const SizedBox(height: 16),
-          TextField(
-            controller: amountCtrl,
-            autofocus: true,
-            keyboardType: const TextInputType.numberWithOptions(decimal: true),
-            decoration: const InputDecoration(labelText: 'Valor do aporte', prefixText: r'R$ '),
-          ),
-          const SizedBox(height: 12),
-          _DateRow(value: date, floor: c.createdAt, onChanged: (d) => setSheet(() => date = d)),
-        ], confirmLabel: 'Lançar', controllers: [amountCtrl]);
+        ],
+        const SizedBox(height: 12),
+        _DateRow(value: date, floor: DateTime(2020), onChanged: (d) => setSheet(() => date = d)),
+      ];
+    }, confirmLabel: 'Lançar', controllers: [amountCtrl]);
     if (ok == true) {
       final amount = Money.parse(amountCtrl.text) ?? 0;
       if (amount > 0) {
@@ -348,16 +464,57 @@ class CaixinhaDetailScreen extends ConsumerWidget {
           TextField(
             controller: principalCtrl,
             keyboardType: const TextInputType.numberWithOptions(decimal: true),
+            onChanged: (_) => setSheet(() {}),
             decoration: const InputDecoration(labelText: 'Valor emprestado', prefixText: r'R$ '),
           ),
           const SizedBox(height: 12),
           TextField(
             controller: interestCtrl,
             keyboardType: const TextInputType.numberWithOptions(decimal: true),
+            onChanged: (_) => setSheet(() {}),
             decoration: const InputDecoration(labelText: 'Juros ao mês', suffixText: '%'),
           ),
           const SizedBox(height: 12),
-          _DateRow(value: date, floor: c.createdAt, onChanged: (d) => setSheet(() => date = d)),
+          // Empréstimo pode ser bem antigo (ex.: migração do caderno) — deixa
+          // datar livremente no passado. Não mexe em cotas/atrasos (que só olham
+          // aportes por competência); só gera os juros retroativos mês a mês.
+          _DateRow(value: date, floor: DateTime(2020), onChanged: (d) => setSheet(() => date = d)),
+          // Prévia dos juros retroativos: ao datar o empréstimo no passado, um
+          // lançamento cheio (taxa × valor) por mês decorrido já entra como
+          // rendimento e é distribuído entre os participantes por competência.
+          Builder(builder: (ctx) {
+            final p = Money.parse(principalCtrl.text) ?? 0;
+            final r = double.tryParse(interestCtrl.text.replaceAll(',', '.')) ?? c.defaultInterestPct;
+            final retro = retroactiveLoanInterest(loanDate: date, principal: p, interestPct: r, now: DateTime.now());
+            if (retro.isEmpty) return const SizedBox.shrink();
+            final each = retro.first.amount;
+            final total = retro.fold(0.0, (a, e) => a + e.amount);
+            return Padding(
+              padding: const EdgeInsets.only(top: 12),
+              child: Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: AppColors.mentaViva.withValues(alpha: 0.15),
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Icon(AppIcons.trendingUp, size: 16, color: AppColors.verdeAguaProfundo),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Text(
+                        'Empréstimo no passado: já entram ${retro.length} ${retro.length == 1 ? 'mês' : 'meses'} '
+                        'de juros (${retro.length} × ${Money.format(each)} = ${Money.format(total)}), '
+                        'distribuídos entre os participantes.',
+                        style: Theme.of(ctx).textTheme.bodySmall,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            );
+          }),
         ], confirmLabel: 'Registrar empréstimo', controllers: [nameCtrl, lastCtrl, phoneCtrl, principalCtrl, interestCtrl]);
 
     if (ok == true) {
@@ -390,6 +547,64 @@ class CaixinhaDetailScreen extends ConsumerWidget {
             );
       }
     }
+  }
+
+  /// Revisão de cotas mês a mês num sheet (parte do guia de preenchimento).
+  /// Reaproveita a mesma seção de Cotas da tela, observando a caixinha para
+  /// refletir cada confirmação sem fechar o sheet.
+  Future<void> _revisarCotas(BuildContext context, Caixinha caixinha) async {
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      useRootNavigator: true,
+      backgroundColor: Colors.transparent,
+      builder: (_) => Consumer(
+        builder: (ctx, ref2, _) {
+          final c = ref2.watch(caixinhaByIdProvider(caixinha.id)).valueOrNull ?? caixinha;
+          final theme = Theme.of(ctx);
+          return Padding(
+            padding: EdgeInsets.only(bottom: MediaQuery.viewInsetsOf(ctx).bottom),
+            child: Material(
+              color: theme.scaffoldBackgroundColor,
+              clipBehavior: Clip.antiAlias,
+              borderRadius: const BorderRadius.vertical(top: Radius.circular(28)),
+              child: ConstrainedBox(
+                constraints: BoxConstraints(maxHeight: MediaQuery.sizeOf(ctx).height * 0.85),
+                child: SingleChildScrollView(
+                  padding: const EdgeInsets.fromLTRB(20, 16, 20, 24),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          Expanded(child: Text('Revisar cotas', style: theme.textTheme.titleLarge)),
+                          IconButton(
+                            visualDensity: VisualDensity.compact,
+                            tooltip: 'Fechar',
+                            onPressed: () => Navigator.of(ctx).pop(),
+                            icon: Icon(AppIcons.close),
+                          ),
+                        ],
+                      ),
+                      Text('Navegue pelos meses e confirme quem já pagou a cota em cada um. '
+                          'Se já informou o saldo de hoje na criação, não precisa refazer os aportes.',
+                          style: theme.textTheme.bodySmall),
+                      const SizedBox(height: 12),
+                      if (c.monthlyQuota > 0)
+                        _CotasSection(c: c, ref: ref2)
+                      else
+                        Text('Defina o valor da cota (editar caixinha) para revisar as cotas.',
+                            style: theme.textTheme.bodySmall),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          );
+        },
+      ),
+    );
   }
 
   Future<void> _adicionarMembro(BuildContext context, WidgetRef ref, Caixinha c) async {
@@ -749,7 +964,10 @@ class CaixinhaDetailScreen extends ConsumerWidget {
               const SizedBox(height: 4),
               Text(Money.format(p.totalProjected), style: AppTheme.moneyStyle(fontSize: 32, color: Colors.white)),
               const SizedBox(height: 4),
-              Text('${Money.format(p.totalContributed)} aportado · + ${Money.format(p.totalYield)} de rendimento',
+              Text(
+                  p.totalYield >= 0
+                      ? '${Money.format(p.totalContributed)} aportado · + ${Money.format(p.totalYield)} de rendimento'
+                      : '${Money.format(p.totalContributed)} aportado · ${Money.format(p.totalYield.abs())} de prejuízo a recuperar',
                   style: const TextStyle(color: Colors.white, fontSize: 12)),
             ],
           ),
@@ -882,13 +1100,27 @@ class _SheetBodyState<T> extends State<_SheetBody<T>> {
         color: Theme.of(context).scaffoldBackgroundColor,
         clipBehavior: Clip.antiAlias,
         borderRadius: const BorderRadius.vertical(top: Radius.circular(28)),
-        child: Padding(
+        child: ConstrainedBox(
+          constraints: BoxConstraints(maxHeight: MediaQuery.sizeOf(context).height * 0.85),
+          child: SingleChildScrollView(
           padding: const EdgeInsets.fromLTRB(20, 16, 20, 24),
           child: Column(
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text(widget.title, style: Theme.of(context).textTheme.titleLarge),
+              Row(
+                children: [
+                  Expanded(child: Text(widget.title, style: Theme.of(context).textTheme.titleLarge)),
+                  // Botão de fechar explícito (além de arrastar/tocar fora) — some
+                  // gente não descobre os gestos. Fecha sem confirmar (retorna null).
+                  IconButton(
+                    visualDensity: VisualDensity.compact,
+                    tooltip: 'Fechar',
+                    onPressed: () => Navigator.of(context).pop(),
+                    icon: Icon(AppIcons.close),
+                  ),
+                ],
+              ),
             const SizedBox(height: 16),
             ...widget.fields(context, (fn) => setState(fn)),
             const SizedBox(height: 20),
@@ -900,6 +1132,7 @@ class _SheetBodyState<T> extends State<_SheetBody<T>> {
               ),
             ),
           ],
+        ),
         ),
         ),
       ),
@@ -1086,11 +1319,7 @@ class _EvolutionCard extends StatelessWidget {
             ],
           ),
           const SizedBox(height: 14),
-          SizedBox(
-            height: 150,
-            width: double.infinity,
-            child: CustomPaint(painter: _EvolutionPainter(series)),
-          ),
+          _EvolutionChart(series: series),
           const SizedBox(height: 10),
           Row(
             children: [
@@ -1126,9 +1355,61 @@ class _LegendDot extends StatelessWidget {
   }
 }
 
+/// Envolve o gráfico com gestos: tocar/arrastar (mobile) ou passar o mouse
+/// (web/desktop) fixa um mês e mostra um balão com o valor daquele mês. Tocar
+/// no mesmo ponto de novo desfaz a seleção.
+class _EvolutionChart extends StatefulWidget {
+  final List<CaixinhaSeriesPoint> series;
+  const _EvolutionChart({required this.series});
+
+  @override
+  State<_EvolutionChart> createState() => _EvolutionChartState();
+}
+
+class _EvolutionChartState extends State<_EvolutionChart> {
+  int? _sel;
+
+  int _indexAt(double dx, double w) {
+    final n = widget.series.length;
+    if (n < 2 || w <= 0) return 0;
+    return (dx / w * (n - 1)).round().clamp(0, n - 1);
+  }
+
+  void _hover(double dx, double w) {
+    final i = _indexAt(dx, w);
+    if (i != _sel) setState(() => _sel = i);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return LayoutBuilder(builder: (context, constraints) {
+      final w = constraints.maxWidth;
+      return MouseRegion(
+        onHover: (e) => _hover(e.localPosition.dx, w),
+        onExit: (_) => setState(() => _sel = null),
+        child: GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onTapDown: (d) {
+            final i = _indexAt(d.localPosition.dx, w);
+            setState(() => _sel = _sel == i ? null : i);
+          },
+          onHorizontalDragStart: (d) => _hover(d.localPosition.dx, w),
+          onHorizontalDragUpdate: (d) => _hover(d.localPosition.dx, w),
+          child: SizedBox(
+            height: 150,
+            width: double.infinity,
+            child: CustomPaint(painter: _EvolutionPainter(widget.series, selected: _sel)),
+          ),
+        ),
+      );
+    });
+  }
+}
+
 class _EvolutionPainter extends CustomPainter {
   final List<CaixinhaSeriesPoint> pts;
-  _EvolutionPainter(this.pts);
+  final int? selected;
+  _EvolutionPainter(this.pts, {this.selected});
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -1202,19 +1483,87 @@ class _EvolutionPainter extends CustomPainter {
       _poly(canvas, patrO.sublist(b), patrPaint, dashed: true);
     }
 
+    // Pontinho em cada mês (real cheio, projeção vazado) — deixa a evolução
+    // legível "mês a mês", inclusive na parte futura, sem parecer que salta.
+    final dotFill = Paint()..color = AppColors.verdeAguaProfundo;
+    final dotHollow = Paint()
+      ..color = AppColors.verdeAguaProfundo.withValues(alpha: 0.45)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.4;
+    for (var i = 0; i < n; i++) {
+      if (i == b) continue; // a fronteira "hoje" ganha o marcador destacado abaixo
+      final projected = i > b;
+      canvas.drawCircle(patrO[i], projected ? 2.2 : 2.4, projected ? dotHollow : dotFill);
+    }
+
     // Ponto de "hoje" no patrimônio.
     if (b >= 0) {
       canvas.drawCircle(patrO[b], 3.5, Paint()..color = AppColors.verdeAguaProfundo);
       canvas.drawCircle(patrO[b], 3.5, Paint()..color = Colors.white..style = PaintingStyle.stroke..strokeWidth = 1.5);
     }
 
-    // Rótulos de mês: início (esq.), fim (dir.) e "hoje" na fronteira.
+    // Rótulos de mês distribuídos no eixo (início → fim, incluindo os meses
+    // futuros da projeção). Passo adaptativo para caber sem sobrepor.
     final labelY = baseline + 3;
-    _label(canvas, _fmtMonth(pts.first.month), Offset(0, labelY), Alignment.centerLeft);
-    _label(canvas, _fmtMonth(pts.last.month), Offset(w, labelY), Alignment.centerRight);
-    if (realCount < n && b > 0 && b < n - 1) {
-      _label(canvas, 'hoje', Offset(x(b), labelY), Alignment.center);
+    final maxLabels = math.max(2, (w / 46).floor());
+    final step = (n / maxLabels).ceil().clamp(1, n);
+    final idxs = <int>{0, n - 1};
+    for (var i = step; i < n - 1; i += step) {
+      idxs.add(i);
     }
+    // Evita rótulo colado no último (descarta o escolhido perto demais do fim).
+    idxs.removeWhere((i) => i != 0 && i != n - 1 && (n - 1 - i) < (step / 2).ceil());
+    final ordered = idxs.toList()..sort();
+    for (final i in ordered) {
+      final align = i == 0
+          ? Alignment.centerLeft
+          : i == n - 1
+              ? Alignment.centerRight
+              : Alignment.center;
+      _label(canvas, _fmtMonth(pts[i].month), Offset(x(i), labelY), align);
+    }
+
+    // Mês selecionado (toque/hover): linha-guia vertical, ponto destacado e
+    // balão com o valor daquele mês (patrimônio + aportado).
+    final sel = selected;
+    if (sel != null && sel >= 0 && sel < n) {
+      final p = pts[sel];
+      final sx = x(sel);
+      final sy = y(p.patrimony);
+      canvas.drawLine(
+        Offset(sx, topPad),
+        Offset(sx, baseline),
+        Paint()
+          ..color = AppColors.verdeAguaProfundo.withValues(alpha: 0.4)
+          ..strokeWidth = 1,
+      );
+      canvas.drawCircle(Offset(sx, sy), 4.5, Paint()..color = AppColors.verdeAguaProfundo);
+      canvas.drawCircle(Offset(sx, sy), 4.5,
+          Paint()..color = Colors.white..style = PaintingStyle.stroke..strokeWidth = 2);
+      _tooltip(canvas, sx, w, p);
+    }
+  }
+
+  /// Balão fixo no topo do gráfico com o mês e os valores (patrimônio e
+  /// aportado) do ponto selecionado. Centraliza no ponto, mas fica dentro da
+  /// largura.
+  void _tooltip(Canvas canvas, double sx, double w, CaixinhaSeriesPoint p) {
+    final title = '${_fmtMonth(p.month)}${p.projected ? ' · projeção' : ''}';
+    final tp = TextPainter(
+      textDirection: TextDirection.ltr,
+      text: TextSpan(children: [
+        TextSpan(text: '$title\n', style: const TextStyle(fontSize: 10, color: Colors.white70, fontWeight: FontWeight.w600)),
+        TextSpan(text: Money.format(p.patrimony), style: const TextStyle(fontSize: 13, color: Colors.white, fontWeight: FontWeight.w700)),
+        TextSpan(text: '\naportado ${Money.format(p.contributed)}', style: const TextStyle(fontSize: 10, color: Colors.white70)),
+      ]),
+    )..layout();
+    const pad = 8.0;
+    final boxW = tp.width + pad * 2;
+    final boxH = tp.height + pad * 2;
+    final left = (sx - boxW / 2).clamp(0.0, math.max(0.0, w - boxW)).toDouble();
+    final rect = RRect.fromRectAndRadius(Rect.fromLTWH(left, 0, boxW, boxH), const Radius.circular(8));
+    canvas.drawRRect(rect, Paint()..color = AppColors.verdeAguaProfundo);
+    tp.paint(canvas, Offset(left + pad, pad));
   }
 
   static const _mesesAbbr = ['jan', 'fev', 'mar', 'abr', 'mai', 'jun', 'jul', 'ago', 'set', 'out', 'nov', 'dez'];
@@ -1260,56 +1609,8 @@ class _EvolutionPainter extends CustomPainter {
   }
 
   @override
-  bool shouldRepaint(_EvolutionPainter oldDelegate) => oldDelegate.pts != pts;
-}
-
-class _ActionsBar extends StatelessWidget {
-  final VoidCallback onAporte;
-  final VoidCallback onRendimento;
-  final VoidCallback onEmprestimo;
-  const _ActionsBar({required this.onAporte, required this.onRendimento, required this.onEmprestimo});
-
-  @override
-  Widget build(BuildContext context) {
-    return Row(
-      children: [
-        Expanded(child: _ActionBtn(icon: AppIconsFill.coins, label: 'Aporte', onTap: onAporte)),
-        const SizedBox(width: 10),
-        Expanded(child: _ActionBtn(icon: AppIcons.trendingUp, label: 'Rendimento', onTap: onRendimento)),
-        const SizedBox(width: 10),
-        Expanded(child: _ActionBtn(icon: AppIcons.handshake, label: 'Emprestar', onTap: onEmprestimo)),
-      ],
-    );
-  }
-}
-
-class _ActionBtn extends StatelessWidget {
-  final IconData icon;
-  final String label;
-  final VoidCallback onTap;
-  const _ActionBtn({required this.icon, required this.label, required this.onTap});
-
-  @override
-  Widget build(BuildContext context) {
-    return Material(
-      color: AppColors.mentaViva.withValues(alpha: 0.2),
-      borderRadius: BorderRadius.circular(16),
-      child: InkWell(
-        borderRadius: BorderRadius.circular(16),
-        onTap: onTap,
-        child: Padding(
-          padding: const EdgeInsets.symmetric(vertical: 14),
-          child: Column(
-            children: [
-              Icon(icon, color: AppColors.verdeAguaProfundo),
-              const SizedBox(height: 6),
-              Text(label, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: AppColors.verdeAguaProfundo)),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
+  bool shouldRepaint(_EvolutionPainter oldDelegate) =>
+      oldDelegate.pts != pts || oldDelegate.selected != selected;
 }
 
 class _SectionTitle extends StatelessWidget {
@@ -1431,6 +1732,7 @@ class _CotasSectionState extends State<_CotasSection> {
 
   final DateTime _now = DateTime.now();
   late DateTime _sel = DateTime(_now.year, _now.month);
+  bool _arrearsOpen = false; // seção de quitação (tesoureiro) começa recolhida
 
   static int _ix(DateTime d) => d.year * 12 + d.month;
   static bool _same(DateTime a, DateTime b) => a.year == b.year && a.month == b.month;
@@ -1442,17 +1744,27 @@ class _CotasSectionState extends State<_CotasSection> {
     final c = widget.c;
     final start = DateTime(c.periodStart.year, c.periodStart.month);
     final current = DateTime(_now.year, _now.month);
+    // Até onde dá pra navegar pra frente: o fim da caixinha (quando há data-
+    // limite futura) ou o mês atual. Permite ver e pré-quitar meses futuros.
+    final endMonth = c.endDate != null ? DateTime(c.endDate!.year, c.endDate!.month) : current;
+    final lastMonth = _ix(endMonth) > _ix(current) ? endMonth : current;
     // Mantém o mês selecionado dentro do intervalo válido em rebuilds.
     if (_ix(_sel) < _ix(start)) _sel = start;
-    if (_ix(_sel) > _ix(current)) _sel = current;
+    if (_ix(_sel) > _ix(lastMonth)) _sel = lastMonth;
 
-    final ativos = c.contributingMembers.where((m) => m.inviteAccepted).toList();
+    // Inclui convidados pendentes (o dono acompanha todo mundo que adicionou;
+    // migração do caderno raramente tem aceite). Só exclui quem recusou.
+    final ativos = c.contributingMembers.where((m) => !m.inviteDeclined).toList();
     final pendentes = ativos.where((m) => c.cotaPendingThisMonth(m.person.id, _sel) > 0.005).length;
-    final pendingMonths = c.monthsWithPendencies(onlyMe: !c.iAmTreasurer, now: _now);
+    // Grupo de confiança: todos enxergam as pendências de todos (a edição
+    // — confirmar/quitar — segue restrita a tesoureiro/dono).
+    final pendingMonths = c.monthsWithPendencies(onlyMe: false, now: _now);
     final outros = pendingMonths.where((d) => !_same(d, _sel)).toList();
 
     final canPrev = _ix(_sel) > _ix(start);
-    final canNext = _ix(_sel) < _ix(current);
+    final canNext = _ix(_sel) < _ix(lastMonth);
+    // Mês futuro: não é "pendência" (ainda não venceu) — é adiantamento de cota.
+    final isFuture = _ix(_sel) > _ix(current);
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -1461,7 +1773,10 @@ class _CotasSectionState extends State<_CotasSection> {
           children: [
             Text('Cotas', style: theme.textTheme.titleLarge),
             const Spacer(),
-            Text(pendentes == 0 ? 'tudo em dia' : '$pendentes pendente(s)', style: theme.textTheme.bodySmall),
+            Text(
+              isFuture ? 'mês futuro' : (pendentes == 0 ? 'tudo em dia' : '$pendentes pendente(s)'),
+              style: theme.textTheme.bodySmall,
+            ),
           ],
         ),
         const SizedBox(height: 8),
@@ -1478,7 +1793,7 @@ class _CotasSectionState extends State<_CotasSection> {
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
                   Text(_label(_sel), style: theme.textTheme.titleMedium),
-                  if (pendentes > 0) ...[
+                  if (pendentes > 0 && !isFuture) ...[
                     const SizedBox(width: 6),
                     Container(width: 7, height: 7, decoration: const BoxDecoration(color: AppColors.coralAceso, shape: BoxShape.circle)),
                   ],
@@ -1492,12 +1807,22 @@ class _CotasSectionState extends State<_CotasSection> {
             ),
           ],
         ),
+        if (isFuture)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 4),
+            child: Text(
+              c.iAmTreasurer
+                  ? 'Mês à frente — dá pra adiantar a cota de quem quiser.'
+                  : 'Mês à frente — cota ainda não vencida.',
+              style: theme.textTheme.bodySmall?.copyWith(color: AppColors.textoSuave),
+            ),
+          ),
         for (final m in ativos)
           Builder(builder: (context) {
             final pid = m.person.id;
             final pending = c.cotaPendingThisMonth(pid, _sel);
             final paid = pending <= 0.005;
-            final name = pid == 'me' ? 'Você' : m.person.name;
+            final name = pid == 'me' ? 'Você' : m.person.fullName;
             return Padding(
               padding: const EdgeInsets.symmetric(vertical: 6),
               child: Row(
@@ -1509,22 +1834,24 @@ class _CotasSectionState extends State<_CotasSection> {
                   if (paid)
                     Text('pago', style: theme.textTheme.bodySmall?.copyWith(color: AppColors.verdeAguaProfundo))
                   else ...[
-                    Text(_overdue(c, _sel) ? 'em atraso' : 'falta ${Money.format(pending)}',
-                        style: theme.textTheme.bodySmall?.copyWith(color: _overdue(c, _sel) ? AppColors.coralAceso : null)),
-                    // Confirmar só quando ainda não venceu (sem juros). Vencido,
-                    // a quitação (com juros) fica no bloco "Em atraso" abaixo.
-                    if (c.iAmTreasurer && !_overdue(c, _sel)) ...[
+                    Text(
+                        isFuture
+                            ? 'adiantar ${Money.format(pending)}'
+                            : '${_overdue(c, _sel) ? 'atrasado' : 'falta'} ${Money.format(pending)}',
+                        style: theme.textTheme.bodySmall?.copyWith(color: _overdue(c, _sel) && !isFuture ? AppColors.coralAceso : null)),
+                    // Registro do mês (editável: valor + data). Vale para mês
+                    // vencido também — é lançamento de aporte, SEM juros. A
+                    // quitação com juros fica no bloco "Em atraso" abaixo.
+                    if (c.iAmTreasurer) ...[
                       const SizedBox(width: 8),
                       InkWell(
-                        onTap: () {
-                          final date = _same(_sel, current) ? _now : DateTime(_sel.year, _sel.month, 15);
-                          widget.ref.read(repositoryControllerProvider).addContribution(c.id, personId: pid, amount: pending, date: date);
-                        },
+                        onTap: () => _registrarCotaMes(context, c, m, _sel, pending),
                         borderRadius: BorderRadius.circular(100),
                         child: Container(
                           padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
                           decoration: BoxDecoration(color: AppColors.verdeAguaProfundo, borderRadius: BorderRadius.circular(100)),
-                          child: const Text('Confirmar', style: TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.w600)),
+                          child: Text(isFuture ? 'Adiantar' : 'Registrar',
+                              style: const TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.w600)),
                         ),
                       ),
                     ],
@@ -1533,36 +1860,63 @@ class _CotasSectionState extends State<_CotasSection> {
               ),
             );
           }),
-        // Em atraso (com juros) — só com dia de pagamento definido. Lista quem
-        // tem cota vencida acumulando juros; a quitação (com juros) é do
-        // tesoureiro/dono. Membro comum vê só o próprio atraso.
-        if (c.paymentDay != null)
+        // Quitação (com juros) — só tesoureiro/dono, em seção própria recolhível
+        // com badge da quantidade. Aparece só quando há atraso e há dia de
+        // vencimento definido. Membro comum vê o status por mês na lista acima.
+        if (c.iAmTreasurer && c.paymentDay != null)
           Builder(builder: (context) {
             final list = ativos
-                .where((m) => c.iAmTreasurer || m.person.id == 'me')
                 .map((m) => (m: m, a: c.cotaArrearsOf(m.person.id, now: _now)))
                 .where((e) => e.a.isLate)
                 .toList();
             if (list.isEmpty) return const SizedBox.shrink();
+            final totalDevido = list.fold(0.0, (a, e) => a + e.a.total);
             return Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 const SizedBox(height: 18),
-                Row(children: [
-                  Icon(AppIcons.warningCircle, size: 18, color: AppColors.coralAceso),
-                  const SizedBox(width: 8),
-                  Text('Em atraso (com juros)', style: theme.textTheme.titleMedium),
-                ]),
-                const SizedBox(height: 4),
-                Text('Cota vencida rende ${_pct(c.defaultInterestPct)} ao mês, como um empréstimo — os juros viram rendimento da caixinha.',
-                    style: theme.textTheme.bodySmall),
-                const SizedBox(height: 10),
-                for (final e in list)
-                  _ArrearsRow(
-                    name: e.m.person.id == 'me' ? 'Você' : e.m.person.name,
-                    arrears: e.a,
-                    onQuitar: c.iAmTreasurer ? () => _quitarAtraso(context, c, e.m) : null,
+                InkWell(
+                  borderRadius: BorderRadius.circular(12),
+                  onTap: () => setState(() => _arrearsOpen = !_arrearsOpen),
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 6),
+                    child: Row(
+                      children: [
+                        Icon(AppIcons.warningCircle, size: 18, color: AppColors.coralAceso),
+                        const SizedBox(width: 8),
+                        Text('Quitações em atraso', style: theme.textTheme.titleMedium),
+                        const SizedBox(width: 8),
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                          decoration: BoxDecoration(color: AppColors.coralAceso, borderRadius: BorderRadius.circular(100)),
+                          child: Text('${list.length}',
+                              style: const TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.w700)),
+                        ),
+                        const Spacer(),
+                        MoneyText(totalDevido, fontSize: 14, color: AppColors.coralAceso),
+                        const SizedBox(width: 4),
+                        AnimatedRotation(
+                          turns: _arrearsOpen ? 0.5 : 0,
+                          duration: const Duration(milliseconds: 180),
+                          child: Icon(AppIcons.caretDown, size: 20, color: theme.colorScheme.onSurface.withValues(alpha: 0.5)),
+                        ),
+                      ],
+                    ),
                   ),
+                ),
+                if (_arrearsOpen) ...[
+                  const SizedBox(height: 4),
+                  Text('Cota vencida rende ${_pct(c.defaultInterestPct)} ao mês, como um empréstimo — os juros viram rendimento da caixinha. '
+                      'Para registrar um pagamento em dia do passado (sem juros), use "Registrar" no mês.',
+                      style: theme.textTheme.bodySmall),
+                  const SizedBox(height: 10),
+                  for (final e in list)
+                    _ArrearsRow(
+                      name: e.m.person.id == 'me' ? 'Você' : e.m.person.fullName,
+                      arrears: e.a,
+                      onQuitar: () => _quitarAtraso(context, c, e.m),
+                    ),
+                ],
               ],
             );
           }),
@@ -1574,7 +1928,7 @@ class _CotasSectionState extends State<_CotasSection> {
             runSpacing: 8,
             crossAxisAlignment: WrapCrossAlignment.center,
             children: [
-              Text(c.iAmTreasurer ? 'Meses com pendência:' : 'Suas pendências:', style: theme.textTheme.bodySmall),
+              Text('Meses com pendência:', style: theme.textTheme.bodySmall),
               for (final d in outros)
                 ActionChip(
                   visualDensity: VisualDensity.compact,
@@ -1599,74 +1953,151 @@ class _CotasSectionState extends State<_CotasSection> {
     return anniv.isBefore(DateTime(_now.year, _now.month, _now.day));
   }
 
-  /// Quitação do atraso (tesoureiro/dono): registra a data e o valor pago,
-  /// abatendo o principal (aportes retroativos nos meses vencidos) e lançando os
-  /// juros como rendimento da caixinha. Deixa tudo no histórico.
+  /// Quitação do atraso (tesoureiro/dono) — para quem paga aos poucos: um único
+  /// campo de valor (default = total devido) que abate os meses vencidos do MAIS
+  /// ANTIGO para o mais novo, deixando o parcial na cota seguinte.
+  ///
+  /// Toda a matemática vem de `Caixinha.planCotaSettlement` (pura e testada), que
+  /// garante o invariante: a dívida cai exatamente o valor pago. O juro que deixa
+  /// de ser derivável sem ter sido pago é **cristalizado** e continua devido.
   Future<void> _quitarAtraso(BuildContext context, Caixinha c, CaixinhaMember m) async {
     final pid = m.person.id;
     final arrears = c.cotaArrearsOf(pid, now: _now);
     if (!arrears.isLate) return;
-    final name = pid == 'me' ? 'Você' : m.person.name;
-    DateTime date = DateTime.now();
+    final name = pid == 'me' ? 'Você' : m.person.fullName;
+
+    bool comJuros = true;
     final pagoCtrl = TextEditingController(text: Money.plain(arrears.total));
-    final ok = await _sheet<bool>(context, 'Quitar atraso · $name', (ctx, setSheet) {
+    CotaSettlementPlan plan() => c.planCotaSettlement(
+          pid,
+          amount: Money.parse(pagoCtrl.text) ?? 0,
+          chargeInterest: comJuros,
+          now: _now,
+        );
+
+    final ok = await _sheet<bool>(context, 'Quitar · $name', (ctx, setSheet) {
       final theme = Theme.of(ctx);
+      final p = plan();
       return [
-        Text('$name está em atraso em ${arrears.months} mês(es). O valor vencido rende juros de '
-            '${_pct(c.defaultInterestPct)} ao mês — os juros entram como rendimento da caixinha, '
-            'dividido entre todos.', style: theme.textTheme.bodySmall),
-        const SizedBox(height: 14),
         _KvRow('Cotas em atraso', Money.format(arrears.principal)),
-        _KvRow('Juros acumulados', Money.format(arrears.interest)),
+        if (arrears.carriedInterest > 0.005) _KvRow('Juros pendentes (já cobrados)', Money.format(arrears.carriedInterest)),
+        _KvRow('Juros do atraso', Money.format(arrears.derivedInterest)),
         const Divider(height: 20),
         _KvRow('Total devido', Money.format(arrears.total), strong: true),
         const SizedBox(height: 14),
+        SegmentedButton<bool>(
+          segments: const [
+            ButtonSegment(value: true, label: Text('Estava atrasado')),
+            ButtonSegment(value: false, label: Text('Pagou em dia')),
+          ],
+          selected: {comJuros},
+          showSelectedIcon: false,
+          onSelectionChanged: (s) => setSheet(() {
+            comJuros = s.first;
+            pagoCtrl.text = Money.plain(comJuros ? arrears.total : arrears.principal);
+          }),
+        ),
+        const SizedBox(height: 6),
+        Text(
+          comJuros
+              ? 'Cobra os juros do atraso (viram rendimento da caixinha).'
+              : 'Correção de registro: lança os aportes datados nos meses e perdoa os juros deles.',
+          style: theme.textTheme.bodySmall,
+        ),
+        const SizedBox(height: 12),
         TextField(
           controller: pagoCtrl,
           keyboardType: const TextInputType.numberWithOptions(decimal: true),
+          onChanged: (_) => setSheet(() {}),
           decoration: const InputDecoration(
-            labelText: 'Valor pago',
+            labelText: 'Valor a pagar',
             prefixText: r'R$ ',
-            helperText: 'Pode pagar tudo ou parte — o que sobrar continua rendendo juros.',
+            helperText: 'Abate dos meses mais antigos pra frente. Pode pagar parcial — o resto continua devendo.',
             helperMaxLines: 2,
           ),
         ),
-        const SizedBox(height: 12),
-        _DateRow(value: date, floor: c.createdAt, onChanged: (d) => setSheet(() => date = d)),
+        const SizedBox(height: 10),
+        Container(
+          padding: const EdgeInsets.all(12),
+          decoration: BoxDecoration(color: AppColors.mentaViva.withValues(alpha: 0.12), borderRadius: BorderRadius.circular(12)),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                p.isEmpty
+                    ? 'Valor insuficiente pra lançar.'
+                    : [
+                        if (p.monthsCleared > 0) 'Quita ${p.monthsCleared} cota(s) cheia(s)',
+                        if (p.partialAmount > 0.005) 'parcial de ${Money.format(p.partialAmount)} em ${_label(p.partialMonth!)}',
+                        if (p.interestPaid > 0.005) '${Money.format(p.interestPaid)} de juros',
+                      ].join(' + '),
+                style: theme.textTheme.bodyMedium,
+              ),
+              // O ponto central: juro que sai do cálculo sem ser pago NÃO some.
+              if (p.newCharge > 0.005) ...[
+                const SizedBox(height: 4),
+                Text('${Money.format(p.newCharge)} de juros ficam registrados como pendentes (continuam devidos).',
+                    style: theme.textTheme.bodySmall?.copyWith(color: AppColors.coralAceso)),
+              ],
+              if (p.remainingDebt > 0.005) ...[
+                const SizedBox(height: 2),
+                Text('Continua devendo ${Money.format(p.remainingDebt)}.', style: theme.textTheme.bodySmall),
+              ],
+            ],
+          ),
+        ),
       ];
     }, confirmLabel: 'Registrar quitação', controllers: [pagoCtrl]);
+
     if (ok == true) {
-      final pago = Money.parse(pagoCtrl.text) ?? arrears.total;
-      if (pago > 0.005) await _applySettle(c, pid, arrears, pago, date);
+      final p = plan();
+      if (p.isEmpty && p.newCharge <= 0.005) return;
+      await widget.ref.read(repositoryControllerProvider).settleCotaArrears(
+            c.id,
+            personId: pid,
+            contributions: [for (final f in p.fills) (date: c.dueDateOfMonth(f.month), amount: f.amount)],
+            interestPaid: p.interestPaid,
+            chargePayments: p.chargePayments,
+            newCharge: p.newCharge,
+          );
     }
   }
 
-  Future<void> _applySettle(Caixinha c, String pid, CotaArrears arrears, double pago, DateTime settleDate) async {
-    final ctrl = widget.ref.read(repositoryControllerProvider);
-    var remaining = pago;
-    // Principal primeiro (restaura a posição), depois os juros.
-    final principalPay = math.min(remaining, arrears.principal);
-    remaining -= principalPay;
-    final interestPay = math.min(remaining, arrears.interest);
-    // Principal: preenche os meses vencidos (mais antigo primeiro), datando cada
-    // aporte no próprio mês — assim a derivação do atraso zera para eles.
-    var left = principalPay;
-    for (final om in c.overdueMonths(pid, now: _now)) {
-      if (left <= 0.005) break;
-      final amt = math.min(left, om.shortfall);
-      left -= amt;
-      final day = c.paymentDay ?? 15;
-      final dim = DateTime(om.month.year, om.month.month + 1, 0).day;
-      final d = DateTime(om.month.year, om.month.month, day < dim ? day : dim);
-      await ctrl.addContribution(c.id, personId: pid, amount: amt, date: d);
-    }
-    // Juros: rendimento da caixinha (como juros de empréstimo), datado na quitação.
-    if (interestPay > 0.005) {
-      await ctrl.addEarning(c.id,
-          amount: interestPay,
-          source: EarningSource.loanInterest,
-          note: 'Juros por atraso — ${c.fullNameOf(pid)}',
-          date: settleDate);
+  /// Registro editável da cota de UM mês (parte da reconstrução do histórico):
+  /// valor e data na mão. É lançamento de aporte na competência do mês — NÃO
+  /// cobra juros (para isso existe "Quitar atraso"). Serve pro tesoureiro trazer
+  /// um mês passado que aparece "atrasado" mas foi pago em dia, com a data real.
+  Future<void> _registrarCotaMes(BuildContext context, Caixinha c, CaixinhaMember m, DateTime month, double pending) async {
+    final pid = m.person.id;
+    final name = pid == 'me' ? 'Você' : m.person.fullName;
+    final quota = c.suggestedAporteFor(pid);
+    final paidSoFar = c.contributedInMonth(pid, month);
+    // Data padrão: o vencimento daquele mês (ou hoje, se for o mês corrente).
+    final day = c.paymentDay ?? 15;
+    final dim = DateTime(month.year, month.month + 1, 0).day;
+    DateTime date = _same(month, DateTime(_now.year, _now.month))
+        ? _now
+        : DateTime(month.year, month.month, day < dim ? day : dim);
+    final valorCtrl = TextEditingController(text: pending > 0 ? Money.plain(pending) : '');
+    final ok = await _sheet<bool>(context, 'Cota de ${_label(month)} · $name', (ctx, setSheet) => [
+          Text('Cota do mês: ${Money.format(quota)}. Já aportou ${Money.format(paidSoFar)}. '
+              'Lance o que falta com a data real — sem juros (é aporte, não quitação de atraso).',
+              style: Theme.of(ctx).textTheme.bodySmall),
+          const SizedBox(height: 14),
+          TextField(
+            controller: valorCtrl,
+            autofocus: true,
+            keyboardType: const TextInputType.numberWithOptions(decimal: true),
+            decoration: const InputDecoration(labelText: 'Valor aportado', prefixText: r'R$ '),
+          ),
+          const SizedBox(height: 12),
+          _DateRow(value: date, floor: DateTime(2020), onChanged: (d) => setSheet(() => date = d)),
+        ], confirmLabel: 'Registrar aporte', controllers: [valorCtrl]);
+    if (ok == true) {
+      final v = Money.parse(valorCtrl.text) ?? 0;
+      if (v > 0) {
+        await widget.ref.read(repositoryControllerProvider).addContribution(c.id, personId: pid, amount: v, date: date);
+      }
     }
   }
 }
@@ -2017,143 +2448,6 @@ class _LoanRow extends StatelessWidget {
   }
 }
 
-/// Histórico paginado: mais novo → mais antigo, 10 por vez + "Carregar mais".
-/// O saldo de cada linha é calculado em ordem cronológica (o `movements` já vem
-/// do mais antigo ao atual); aqui só exibimos invertido.
-class _HistorySection extends StatefulWidget {
-  final Caixinha c;
-  const _HistorySection({required this.c});
-
-  @override
-  State<_HistorySection> createState() => _HistorySectionState();
-}
-
-class _HistorySectionState extends State<_HistorySection> {
-  static const _pageSize = 10;
-  int _shown = _pageSize;
-
-  bool _open = false;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final all = widget.c.movements.reversed.toList(); // mais novo primeiro
-    final visible = all.take(_shown).toList();
-    final remaining = all.length - visible.length;
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        // Gaveta: cabeçalho tocável que expande/recolhe o histórico.
-        InkWell(
-          borderRadius: BorderRadius.circular(12),
-          onTap: () => setState(() => _open = !_open),
-          child: Padding(
-            padding: const EdgeInsets.symmetric(vertical: 6),
-            child: Row(
-              children: [
-                Text('Histórico', style: theme.textTheme.titleLarge),
-                const SizedBox(width: 8),
-                Text('${all.length}', style: theme.textTheme.bodySmall),
-                const Spacer(),
-                AnimatedRotation(
-                  turns: _open ? 0.5 : 0,
-                  duration: const Duration(milliseconds: 180),
-                  child: Icon(AppIcons.caretDown, size: 20, color: theme.colorScheme.onSurface.withValues(alpha: 0.5)),
-                ),
-              ],
-            ),
-          ),
-        ),
-        AnimatedCrossFade(
-          duration: const Duration(milliseconds: 200),
-          crossFadeState: _open ? CrossFadeState.showSecond : CrossFadeState.showFirst,
-          firstChild: const SizedBox(width: double.infinity),
-          secondChild: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              const SizedBox(height: 4),
-              for (final m in visible) _MovementRow(movement: m),
-              if (remaining > 0)
-                Center(
-                  child: TextButton(
-                    onPressed: () => setState(() => _shown += _pageSize),
-                    child: Text('Carregar mais ($remaining)'),
-                  ),
-                ),
-            ],
-          ),
-        ),
-      ],
-    );
-  }
-}
-
-/// Uma linha do histórico: ícone + descrição + valor (com sinal), e o saldo
-/// (patrimônio) resultante, menos destacado.
-class _MovementRow extends StatelessWidget {
-  final CaixinhaMovement movement;
-  const _MovementRow({required this.movement});
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final m = movement;
-    final positive = m.amount >= 0;
-    // Rendimento negativo (perda/prejuízo) mostra ícone de alerta em coral.
-    final loss = m.kind == MovementKind.earning && m.amount < 0;
-    final (IconData icon, Color color) = loss
-        ? (AppIconsFill.warningCircle, AppColors.coralAceso)
-        : switch (m.kind) {
-            MovementKind.contribution => (AppIconsFill.coins, AppColors.verdeAguaProfundo),
-            MovementKind.earning => (AppIcons.trendingUp, AppColors.verdeAguaProfundo),
-            MovementKind.adjustment => (AppIcons.pencilSimple, AppColors.textoSuave),
-            MovementKind.exit => (AppIcons.signOut, AppColors.coralAceso),
-          };
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 8),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Icon(icon, size: 18, color: color),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(m.label, style: theme.textTheme.bodyMedium),
-                Row(
-                  children: [
-                    Text(_fmtDate(m.date), style: theme.textTheme.bodySmall?.copyWith(fontSize: 11)),
-                    if (m.recordedByName != null)
-                      Flexible(
-                        child: Text(' · lançado por ${m.recordedByName}',
-                            overflow: TextOverflow.ellipsis,
-                            style: theme.textTheme.bodySmall?.copyWith(fontSize: 11)),
-                      ),
-                  ],
-                ),
-              ],
-            ),
-          ),
-          Column(
-            crossAxisAlignment: CrossAxisAlignment.end,
-            children: [
-              Text(
-                '${positive ? '+' : '−'} ${Money.format(m.amount.abs())}',
-                style: AppTheme.moneyStyle(fontSize: 14, color: positive ? AppColors.verdeAguaProfundo : AppColors.coralAceso),
-              ),
-              Text('saldo ${Money.format(m.balanceAfter)}',
-                  style: theme.textTheme.bodySmall?.copyWith(fontSize: 11, color: AppColors.textoSuave)),
-            ],
-          ),
-        ],
-      ),
-    );
-  }
-
-  static String _fmtDate(DateTime d) =>
-      '${d.day.toString().padLeft(2, '0')}/${d.month.toString().padLeft(2, '0')}/${d.year}';
-}
 
 class _ClosedBanner extends StatelessWidget {
   final Caixinha c;
@@ -2181,6 +2475,302 @@ class _ClosedBanner extends StatelessWidget {
       ),
     );
   }
+}
+
+/// Guia de preenchimento para caixinhas migradas ("já em andamento"): três
+/// passos que abrem os fluxos já existentes (cotas mês a mês, rendimentos e
+/// empréstimos), na ordem que faz a conta bater. Dispensável.
+class _OnboardingGuide extends StatelessWidget {
+  final VoidCallback onCotas;
+  final VoidCallback onRendimento;
+  final VoidCallback onEmprestimo;
+  final VoidCallback onDismiss;
+  const _OnboardingGuide({
+    required this.onCotas,
+    required this.onRendimento,
+    required this.onEmprestimo,
+    required this.onDismiss,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Container(
+      margin: const EdgeInsets.only(bottom: 16),
+      padding: const EdgeInsets.fromLTRB(16, 12, 8, 14),
+      decoration: BoxDecoration(
+        color: AppColors.mentaViva.withValues(alpha: 0.15),
+        borderRadius: BorderRadius.circular(AppTheme.cardRadius),
+        border: Border.all(color: AppColors.verdeAguaProfundo.withValues(alpha: 0.25)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(AppIconsFill.usersThree, size: 20, color: AppColors.verdeAguaProfundo),
+              const SizedBox(width: 8),
+              Expanded(child: Text('Preencher o histórico', style: theme.textTheme.titleMedium)),
+              InkWell(
+                borderRadius: BorderRadius.circular(100),
+                onTap: onDismiss,
+                child: Padding(
+                  padding: const EdgeInsets.all(6),
+                  child: Icon(AppIcons.close, size: 18, color: theme.colorScheme.onSurface.withValues(alpha: 0.5)),
+                ),
+              ),
+            ],
+          ),
+          Padding(
+            padding: const EdgeInsets.only(right: 8, bottom: 4),
+            child: Text(
+              'Caixinha que já rodava? Traga o passado pra dentro na ordem abaixo — o app calcula '
+              'participação, juros e rendimento. Se já informou o saldo de hoje na criação, pule as cotas.',
+              style: theme.textTheme.bodySmall,
+            ),
+          ),
+          const SizedBox(height: 8),
+          _GuideStep(n: '1', icon: AppIconsFill.coins, title: 'Revisar cotas mês a mês', subtitle: 'Marque quem pagou em cada mês', onTap: onCotas),
+          _GuideStep(n: '2', icon: AppIcons.trendingUp, title: 'Lançar rendimentos', subtitle: 'O que rendeu no banco em cada mês', onTap: onRendimento),
+          _GuideStep(n: '3', icon: AppIcons.handshake, title: 'Registrar empréstimos', subtitle: 'Com a data real — os juros retroativos entram sozinhos', onTap: onEmprestimo),
+        ],
+      ),
+    );
+  }
+}
+
+/// Um passo do guia de preenchimento: número + ícone + título/subtítulo, tocável.
+class _GuideStep extends StatelessWidget {
+  final String n;
+  final IconData icon;
+  final String title;
+  final String subtitle;
+  final VoidCallback onTap;
+  const _GuideStep({required this.n, required this.icon, required this.title, required this.subtitle, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return InkWell(
+      borderRadius: BorderRadius.circular(12),
+      onTap: onTap,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 4),
+        child: Row(
+          children: [
+            Container(
+              width: 22,
+              height: 22,
+              alignment: Alignment.center,
+              decoration: const BoxDecoration(color: AppColors.verdeAguaProfundo, shape: BoxShape.circle),
+              child: Text(n, style: const TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.w700)),
+            ),
+            const SizedBox(width: 10),
+            Icon(icon, size: 18, color: AppColors.verdeAguaProfundo),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(title, style: theme.textTheme.titleSmall),
+                  Text(subtitle, style: theme.textTheme.bodySmall),
+                ],
+              ),
+            ),
+            Icon(AppIcons.caretRight, size: 16, color: theme.colorScheme.onSurface.withValues(alpha: 0.4)),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// Lançamentos disponíveis no botão flutuante (só dono/tesoureiro).
+enum _AcaoLancamento { aporte, rendimento, emprestimo }
+
+/// Rótulo de aba com contador opcional (ex.: quantas pessoas devendo).
+class _TabLabel extends StatelessWidget {
+  final String text;
+  final int badge;
+  final bool subtle;
+  const _TabLabel({required this.text, this.badge = 0, this.subtle = false});
+
+  @override
+  Widget build(BuildContext context) {
+    if (badge <= 0) return Text(text);
+    final color = subtle ? AppColors.verdeAguaProfundo : AppColors.coralAceso;
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Text(text),
+        const SizedBox(width: 6),
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+          decoration: BoxDecoration(color: color, borderRadius: BorderRadius.circular(100)),
+          child: Text('$badge', style: const TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.w700)),
+        ),
+      ],
+    );
+  }
+}
+
+/// Botão flutuante de lançamentos: abre as três ações (aporte, rendimento,
+/// empréstimo) numa folha. Só é construído para dono/tesoureiro.
+class _LancarFab extends StatelessWidget {
+  final ValueChanged<_AcaoLancamento> onSelected;
+  const _LancarFab({required this.onSelected});
+
+  @override
+  Widget build(BuildContext context) {
+    return FloatingActionButton.extended(
+      backgroundColor: AppColors.verdeAguaProfundo,
+      foregroundColor: Colors.white,
+      onPressed: () => _menu(context),
+      icon: Icon(AppIcons.plus),
+      label: const Text('Lançar'),
+    );
+  }
+
+  Future<void> _menu(BuildContext context) async {
+    final escolha = await showModalBottomSheet<_AcaoLancamento>(
+      context: context,
+      useRootNavigator: true,
+      backgroundColor: Colors.transparent,
+      builder: (ctx) => Material(
+        color: Theme.of(ctx).scaffoldBackgroundColor,
+        clipBehavior: Clip.antiAlias,
+        borderRadius: const BorderRadius.vertical(top: Radius.circular(28)),
+        child: SafeArea(
+          top: false,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(20, 16, 8, 4),
+                child: Row(
+                  children: [
+                    Expanded(child: Text('Lançar', style: Theme.of(ctx).textTheme.titleLarge)),
+                    IconButton(
+                      tooltip: 'Fechar',
+                      onPressed: () => Navigator.of(ctx).pop(),
+                      icon: Icon(AppIcons.close),
+                    ),
+                  ],
+                ),
+              ),
+              _FabOption(
+                icon: AppIconsFill.coins,
+                title: 'Aporte',
+                subtitle: 'Dinheiro que entrou de um participante',
+                onTap: () => Navigator.of(ctx).pop(_AcaoLancamento.aporte),
+              ),
+              _FabOption(
+                icon: AppIcons.trendingUp,
+                title: 'Rendimento',
+                subtitle: 'Resultado do mês (banco/poupança)',
+                onTap: () => Navigator.of(ctx).pop(_AcaoLancamento.rendimento),
+              ),
+              _FabOption(
+                icon: AppIcons.handshake,
+                title: 'Emprestar',
+                subtitle: 'Registrar valor emprestado a alguém',
+                onTap: () => Navigator.of(ctx).pop(_AcaoLancamento.emprestimo),
+              ),
+              const SizedBox(height: 12),
+            ],
+          ),
+        ),
+      ),
+    );
+    if (escolha != null) onSelected(escolha);
+  }
+}
+
+class _FabOption extends StatelessWidget {
+  final IconData icon;
+  final String title;
+  final String subtitle;
+  final VoidCallback onTap;
+  const _FabOption({required this.icon, required this.title, required this.subtitle, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    return ListTile(
+      leading: CircleAvatar(
+        backgroundColor: AppColors.mentaViva.withValues(alpha: 0.25),
+        child: Icon(icon, color: AppColors.verdeAguaProfundo, size: 20),
+      ),
+      title: Text(title, style: Theme.of(context).textTheme.titleMedium),
+      subtitle: Text(subtitle, style: Theme.of(context).textTheme.bodySmall),
+      onTap: onTap,
+    );
+  }
+}
+
+/// Linha detalhada do histórico (aba Histórico): o que foi lançado, para quem,
+/// por quem, o valor e o patrimônio ANTES → DEPOIS da movimentação.
+class _MovementCard extends StatelessWidget {
+  final CaixinhaMovement movement;
+  const _MovementCard({required this.movement});
+
+  static String _fmtDate(DateTime d) =>
+      '${d.day.toString().padLeft(2, '0')}/${d.month.toString().padLeft(2, '0')}/${d.year}';
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final m = movement;
+    final positive = m.amount >= 0;
+    final loss = m.kind == MovementKind.earning && m.amount < 0;
+    final (IconData icon, Color color) = loss
+        ? (AppIconsFill.warningCircle, AppColors.coralAceso)
+        : switch (m.kind) {
+            MovementKind.contribution => (AppIconsFill.coins, AppColors.verdeAguaProfundo),
+            MovementKind.earning => (AppIcons.trendingUp, AppColors.verdeAguaProfundo),
+            MovementKind.adjustment => (AppIcons.pencilSimple, AppColors.textoSuave),
+            MovementKind.exit => (AppIcons.signOut, AppColors.coralAceso),
+          };
+    final antes = m.balanceAfter - m.amount;
+    return Container(
+      margin: const EdgeInsets.only(bottom: 10),
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: theme.cardTheme.color,
+        borderRadius: BorderRadius.circular(AppTheme.cardRadius),
+        border: Border.all(color: AppColors.areiaNeutra),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Icon(icon, size: 18, color: color),
+              const SizedBox(width: 10),
+              Expanded(child: Text(m.label, style: theme.textTheme.titleMedium)),
+              Text('${positive ? '+' : '−'} ${Money.format(m.amount.abs())}',
+                  style: AppTheme.moneyStyle(
+                      fontSize: 15, color: positive ? AppColors.verdeAguaProfundo : AppColors.coralAceso)),
+            ],
+          ),
+          const SizedBox(height: 8),
+          _kv(theme, 'Quando', _fmtDate(m.date)),
+          _kv(theme, 'Lançado por', m.recordedByName ?? 'a própria pessoa'),
+          _kv(theme, 'Patrimônio', '${Money.format(antes)}  →  ${Money.format(m.balanceAfter)}'),
+        ],
+      ),
+    );
+  }
+
+  Widget _kv(ThemeData theme, String k, String v) => Padding(
+        padding: const EdgeInsets.only(left: 28, top: 2),
+        child: Row(
+          children: [
+            Expanded(child: Text(k, style: theme.textTheme.bodySmall)),
+            Text(v, style: theme.textTheme.bodySmall?.copyWith(fontWeight: FontWeight.w600)),
+          ],
+        ),
+      );
 }
 
 /// Enquadramento legal: o app só organiza; não é instituição financeira.
@@ -2233,7 +2823,10 @@ class _DateRow extends StatelessWidget {
       borderRadius: BorderRadius.circular(12),
       onTap: () async {
         final now = DateTime.now();
-        final first = DateTime(floor.year, floor.month, floor.day);
+        var first = DateTime(floor.year, floor.month, floor.day);
+        // Nunca deixa o piso passar de hoje (senão showDatePicker estoura com
+        // firstDate > lastDate quando o início é hoje/futuro).
+        if (first.isAfter(now)) first = DateTime(now.year, now.month, now.day);
         var init = value;
         if (init.isBefore(first)) init = first;
         if (init.isAfter(now)) init = now;
