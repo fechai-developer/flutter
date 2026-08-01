@@ -246,3 +246,32 @@ a partir desses eventos — o banco guarda fatos, não saldos.
 - [ ] Juro cristalizado não compõe (decisão consciente — revisar se o grupo quiser).
 - [ ] O modo "já em andamento" com saldo-semente é uma *foto de hoje*; o histórico
       mês a mês só existe se for reconstruído pelo guia.
+
+## 10. Edição travada após o 1º lançamento (sessão 2026-07-31)
+
+O modelo **não versiona o passado** — `cotaArrearsOf` recalcula o atraso de
+todos os meses a partir do `monthlyQuota`/`paymentDay`/`quotas` **atuais**, não
+de um snapshot de cada mês. Por isso, mudar esses campos depois que já existe
+aporte/rendimento/empréstimo/ajuste (`Caixinha.hasMovements`) reescreveria
+retroativamente juros já cobrados ou perdoados.
+
+Decisão de produto: **cota, dia de pagamento, data de início e cotas por
+pessoa ficam travados assim que `hasMovements` é true** (`EditCaixinhaSheet` +
+painel do membro). Data-fim continua editável sempre (só afeta a projeção, não
+o passado). Versionar esses campos por período é o próximo passo se o grupo
+precisar mudar cota/composição no meio do caminho sem esse travamento — não
+implementado ainda.
+
+**Excluir** segue o mesmo raciocínio: só permitido quando `!hasMovements`
+(igual ao padrão de remoção de membro — hard delete só sem histórico). Com
+lançamento, o único caminho é **Encerrar e partilhar**, que agora deixa a
+caixinha **somente-leitura** (sem novo aporte/rendimento/empréstimo/edição;
+Histórico/Relatório/empréstimos em aberto continuam visíveis) e mostra a
+partilha **por pessoa** (antes só mostrava o valor de quem via a tela).
+
+Histórico: lançamentos de quitação de atraso (`settleCotaArrears`) agora
+carregam `Contribution.note = 'Quitação de atraso'` em vez de aparecerem como
+"Aporte" genérico (migração `20260731120000_caixinha_contribution_note.sql`,
+coluna `note` nullable — aplicar com `supabase db push`). A ordenação do
+extrato usa desempate determinístico por índice original (evita embaralhar
+lançamentos com a mesma data a cada rebuild).

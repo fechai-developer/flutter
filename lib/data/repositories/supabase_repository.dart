@@ -28,6 +28,12 @@ class SupabaseRepository implements AppRepository {
     return res as String?;
   }
 
+  /// Conta a ligar num novo vínculo. Quando a pessoa veio da lista de
+  /// conhecidos, já sabemos o `profile_id` dela — é o vínculo direto e estável.
+  /// Só caímos na busca por telefone para quem foi digitado agora.
+  Future<String?> _profileIdFor(Person member) async =>
+      member.profileId ?? await _findProfileByPhone(member.phone);
+
   // ----------------- Perfil -----------------
   @override
   Future<Person> currentUser() async {
@@ -153,13 +159,27 @@ class SupabaseRepository implements AppRepository {
 
   @override
   Future<void> updateProfile(Person user) async {
+    final phone = (user.phone ?? '').trim();
     await _c.from('profiles').update({
       'name': user.name,
       'last_name': user.lastName,
-      'phone': user.phone,
+      // '' não é telefone: gravar vazio quebraria o religamento por número.
+      'phone': phone.isEmpty ? null : phone,
       'photo_url': user.photoUrl,
       'pix_key': user.pixKey,
     }).eq('id', _uid);
+
+    // Religa os vínculos que já existiam para este número — quem te adicionou
+    // numa conta antes de você ter cadastro. O banco também faz isso por
+    // gatilho; chamar aqui garante que já apareça nesta carga.
+    if (phone.isNotEmpty) {
+      try {
+        await _c.rpc('link_my_memberships');
+      } catch (_) {
+        // Ambiente sem a migração aplicada: o gatilho cobre o caso, e não vale
+        // travar o cadastro por causa disto.
+      }
+    }
   }
 
   // ----------------- Grupos -----------------
@@ -204,6 +224,7 @@ class SupabaseRepository implements AppRepository {
         name: isMe ? 'Você' : gm['name'] as String,
         lastName: isMe ? null : gm['last_name'] as String?,
         phone: gm['phone'] as String?,
+        profileId: gm['profile_id'] as String?,
       ));
     }
 
@@ -295,7 +316,7 @@ class SupabaseRepository implements AppRepository {
       {'group_id': groupId, 'profile_id': _uid, 'name': me.name, 'last_name': me.lastName, 'phone': me.phone, 'status': 'accepted'},
     ];
     for (final m in members.where((m) => m.id != 'me')) {
-      final pid = await _findProfileByPhone(m.phone);
+      final pid = await _profileIdFor(m);
       rows.add({
         'group_id': groupId,
         if (pid != null) 'profile_id': pid,
@@ -360,7 +381,7 @@ class SupabaseRepository implements AppRepository {
 
   @override
   Future<ExpenseGroup> addMember(String groupId, Person member) async {
-    final pid = await _findProfileByPhone(member.phone);
+    final pid = await _profileIdFor(member);
     await _c.from('group_members').insert({
       'group_id': groupId,
       if (pid != null) 'profile_id': pid,
@@ -402,6 +423,12 @@ class SupabaseRepository implements AppRepository {
       'to_member': p2gm[toId],
       'amount': amount,
     });
+    return groupById(groupId);
+  }
+
+  @override
+  Future<ExpenseGroup> undoPayment(String groupId, String paymentId) async {
+    await _c.from('payments').delete().eq('id', paymentId);
     return groupById(groupId);
   }
 
@@ -478,6 +505,7 @@ class SupabaseRepository implements AppRepository {
           name: isMe ? 'Você' : m['name'] as String,
           lastName: isMe ? null : m['last_name'] as String?,
           phone: m['phone'] as String?,
+          profileId: m['profile_id'] as String?,
         ),
         quota: (m['quota'] as num).toDouble(),
         status: QuotaStatus.values.byName(m['status'] as String),
@@ -566,7 +594,7 @@ class SupabaseRepository implements AppRepository {
 
   @override
   Future<Subscription> addSubscriptionMember(String subscriptionId, SubscriptionMember member) async {
-    final pid = await _findProfileByPhone(member.person.phone);
+    final pid = await _profileIdFor(member.person);
     await _c.from('subscription_members').insert({
       'subscription_id': subscriptionId,
       if (pid != null) 'profile_id': pid,
@@ -605,7 +633,7 @@ class SupabaseRepository implements AppRepository {
   static const _caixinhaSelect =
       'id,name,emoji,owner_id,default_interest_pct,monthly_quota,payment_day,status,created_at,closed_at,start_date,end_date,'
       'caixinha_members(id,profile_id,name,last_name,phone,role,invite_status,quotas),'
-      'caixinha_contributions(id,member_id,amount,date,recorded_by),'
+      'caixinha_contributions(id,member_id,amount,date,recorded_by,note),'
       'caixinha_loans(id,borrower_member_id,borrower_name,principal,interest_pct,date,due_date),'
       'caixinha_earnings(id,amount,source,loan_id,note,date,recorded_by),'
       'caixinha_loan_payments(id,loan_id,amount,note,date),'
@@ -629,6 +657,7 @@ class SupabaseRepository implements AppRepository {
           name: isMe ? 'Você' : m['name'] as String,
           lastName: isMe ? null : m['last_name'] as String?,
           phone: m['phone'] as String?,
+          profileId: m['profile_id'] as String?,
         ),
         role: CaixinhaRole.values.byName(m['role'] as String),
         inviteStatus: _statusFrom(m['invite_status'] as String?),
@@ -657,7 +686,14 @@ class SupabaseRepository implements AppRepository {
       members: members,
       contributions: [
         for (final x in (c['caixinha_contributions'] as List? ?? const []).cast<Map<String, dynamic>>())
-          Contribution(id: x['id'] as String, personId: person(x['member_id']), amount: (x['amount'] as num).toDouble(), date: DateTime.parse(x['date'] as String), recordedBy: recorder(x['recorded_by'])),
+          Contribution(
+            id: x['id'] as String,
+            personId: person(x['member_id']),
+            amount: (x['amount'] as num).toDouble(),
+            date: DateTime.parse(x['date'] as String),
+            recordedBy: recorder(x['recorded_by']),
+            note: x['note'] as String?,
+          ),
       ],
       loans: [
         for (final x in (c['caixinha_loans'] as List? ?? const []).cast<Map<String, dynamic>>())
@@ -752,7 +788,7 @@ class SupabaseRepository implements AppRepository {
       {'id': memberRowId['me'], 'caixinha_id': cid, 'profile_id': _uid, 'name': me.name, 'last_name': me.lastName, 'phone': me.phone, 'role': 'owner', 'invite_status': 'accepted', 'quotas': quotas['me'] ?? 1},
     ];
     for (final m in members.where((m) => m.id != 'me')) {
-      final pid = await _findProfileByPhone(m.phone);
+      final pid = await _profileIdFor(m);
       memberRowId[m.id] = const Uuid().v4();
       rows.add({
         'id': memberRowId[m.id],
@@ -834,7 +870,7 @@ class SupabaseRepository implements AppRepository {
         memberId = existing['id'] as String;
       } else {
         // Novo tomador externo: cadastra a pessoa (papel borrower, sem aceite).
-        final pid = await _findProfileByPhone(borrower.phone);
+        final pid = await _profileIdFor(borrower);
         final inserted = await _c.from('caixinha_members').insert({
           'caixinha_id': caixinhaId,
           if (pid != null) 'profile_id': pid,
@@ -898,7 +934,13 @@ class SupabaseRepository implements AppRepository {
     if (contributions.isNotEmpty) {
       await _c.from('caixinha_contributions').insert([
         for (final f in contributions)
-          {'caixinha_id': caixinhaId, 'member_id': memberId, 'amount': f.amount, 'date': f.date.toUtc().toIso8601String()},
+          {
+            'caixinha_id': caixinhaId,
+            'member_id': memberId,
+            'amount': f.amount,
+            'date': f.date.toUtc().toIso8601String(),
+            'note': 'Quitação de atraso',
+          },
       ]);
     }
     // 2) Juro pago vira rendimento da caixinha.
@@ -991,8 +1033,20 @@ class SupabaseRepository implements AppRepository {
   }
 
   @override
+  Future<Caixinha> undoMovement(String caixinhaId, {required MovementKind kind, required String sourceId}) async {
+    final table = switch (kind) {
+      MovementKind.contribution => 'caixinha_contributions',
+      MovementKind.earning => 'caixinha_earnings',
+      MovementKind.adjustment => 'caixinha_adjustments',
+      MovementKind.exit => 'caixinha_exits',
+    };
+    await _c.from(table).delete().eq('id', sourceId);
+    return caixinhaById(caixinhaId);
+  }
+
+  @override
   Future<Caixinha> addCaixinhaMember(String caixinhaId, Person member) async {
-    final pid = await _findProfileByPhone(member.phone);
+    final pid = await _profileIdFor(member);
     await _c.from('caixinha_members').insert({
       'caixinha_id': caixinhaId,
       if (pid != null) 'profile_id': pid,

@@ -46,6 +46,10 @@ class AppIcons {
   static const IconData handshake = Icons.handshake_outlined; // empréstimo
   static const IconData trendingUp = Icons.trending_up; // rendimento
   static const IconData pdf = Icons.picture_as_pdf_outlined; // relatório
+  static const IconData eye = Icons.visibility_outlined;
+  static const IconData eyeSlash = Icons.visibility_off_outlined;
+  static const IconData circleOutline = Icons.circle_outlined;
+  static const IconData undo = Icons.undo; // desfazer lançamento do histórico
 }
 
 class AppIconsFill {

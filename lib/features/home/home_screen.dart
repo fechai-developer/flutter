@@ -51,18 +51,23 @@ class HomeScreen extends ConsumerWidget {
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           Text('Olá,', style: theme.textTheme.bodyMedium),
-                          Text(u.name, style: userNameStyle(context, base: theme.textTheme.headlineMedium)),
+                          Text(
+                            u.name,
+                            style: userNameStyle(context, base: theme.textTheme.headlineMedium),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
                         ],
                       ),
                       loading: () => const SizedBox(height: 48),
                       error: (_, __) => const Text('Olá!'),
                     ),
                   ),
-                  IconButton(
-                    onPressed: () => context.push('/resumo'),
-                    tooltip: 'Indicadores',
-                    icon: Icon(AppIcons.chartBar, color: AppColors.verdeAguaProfundo),
-                  ),
+                  // Porta de entrada do Resumo. No celular ele saiu da barra de
+                  // baixo (que ficou poluída com seis abas), então este botão é
+                  // o caminho — por isso vem com rótulo, não só o ícone.
+                  const _ResumoButton(),
+                  const SizedBox(width: 4),
                   IconButton(
                     onPressed: () => context.push('/profile'),
                     icon: user.maybeWhen(
@@ -126,6 +131,43 @@ class HomeScreen extends ConsumerWidget {
 }
 
 String _who(String? name) => (name == null || name == 'Você') ? 'Você' : name.split(' ').first;
+
+/// Pílula "Resumo" no cabeçalho da Home — leva aos indicadores consolidados.
+/// Usa `go` (não `push`) para trocar de aba de verdade: na tela larga a sidebar
+/// acompanha e marca o item; no celular a tela ganha um "voltar" próprio.
+class _ResumoButton extends StatelessWidget {
+  const _ResumoButton();
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: AppColors.mentaViva.withValues(alpha: 0.28),
+      borderRadius: BorderRadius.circular(999),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(999),
+        onTap: () => context.go('/resumo'),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(AppIcons.chartBar, size: 18, color: AppColors.verdeAguaProfundo),
+              const SizedBox(width: 6),
+              Text(
+                'Resumo',
+                style: TextStyle(
+                  fontSize: 13,
+                  fontWeight: FontWeight.w600,
+                  color: AppColors.verdeAguaProfundo,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
 
 /// Feed de atividade recente: despesas lançadas e acertos, de qualquer pessoa
 /// dos seus grupos. Tocar leva ao grupo. (#5)

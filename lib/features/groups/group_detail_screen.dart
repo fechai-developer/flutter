@@ -20,6 +20,7 @@ import '../charge/pay_sheet.dart';
 import 'edit_group_sheet.dart';
 import 'expense_sheet.dart';
 import 'group_indicators_tab.dart';
+import 'group_report.dart';
 import 'widgets/mini_calendar.dart';
 
 class GroupDetailScreen extends ConsumerWidget {
@@ -38,7 +39,7 @@ class GroupDetailScreen extends ConsumerWidget {
       loading: () => const Scaffold(body: Center(child: CircularProgressIndicator())),
       error: (e, _) => Scaffold(body: Center(child: Text('Erro: $e'))),
       data: (g) => DefaultTabController(
-        length: 3,
+        length: 4,
         child: Scaffold(
           appBar: AppBar(
             leading: IconButton(
@@ -53,6 +54,11 @@ class GroupDetailScreen extends ConsumerWidget {
               ],
             ),
             actions: [
+              IconButton(
+                icon: Icon(AppIcons.pdf),
+                tooltip: 'Relatório (PDF)',
+                onPressed: () => shareGroupReport(g),
+              ),
               if (!g.viewerRemoved)
                 IconButton(
                   icon: Icon(AppIcons.pencilSimple),
@@ -63,7 +69,9 @@ class GroupDetailScreen extends ConsumerWidget {
             bottom: const TabBar(
               labelColor: AppColors.verdeAguaProfundo,
               indicatorColor: AppColors.verdeAguaProfundo,
-              tabs: [Tab(text: 'Saldos'), Tab(text: 'Despesas'), Tab(text: 'Indicadores')],
+              isScrollable: true,
+              tabAlignment: TabAlignment.start,
+              tabs: [Tab(text: 'Saldos'), Tab(text: 'Despesas'), Tab(text: 'Indicadores'), Tab(text: 'Histórico')],
             ),
           ),
           floatingActionButton: g.viewerRemoved
@@ -81,6 +89,7 @@ class GroupDetailScreen extends ConsumerWidget {
               _BalancesTab(group: g, meId: me.valueOrNull?.id ?? 'me'),
               _ExpensesTab(group: g),
               GroupIndicatorsTab(group: g, meId: me.valueOrNull?.id ?? 'me'),
+              _HistoryTab(group: g),
             ],
           ),
         ),
@@ -251,7 +260,7 @@ class _BalancesTab extends ConsumerWidget {
         ),
         if (group.expenses.isNotEmpty) ...[
           const SizedBox(height: 12),
-          _YouInGroupCard(minhaParte: minhaParte, euPaguei: euPaguei),
+          _YouInGroupCard(minhaParte: minhaParte, euPaguei: euPaguei, meId: meId),
         ],
         const SizedBox(height: 12),
         // Quem está no grupo — visível e objetivo (toque abre a lista com status).
@@ -310,16 +319,19 @@ class _BalancesTab extends ConsumerWidget {
 }
 
 /// Item 1: resumo do PRÓPRIO usuário dentro da conta — "Sua parte" (consumo que
-/// coube a mim) e "Você pagou" (o que saiu do meu bolso). Dá pra bater o olho e
-/// entender os dois lados sem abrir a lista de despesas.
+/// coube a mim), "Você pagou" (o que saiu do meu bolso) e "Diferença" (saldo
+/// líquido: positivo = a receber, negativo = a pagar).
 class _YouInGroupCard extends StatelessWidget {
   final double minhaParte;
   final double euPaguei;
-  const _YouInGroupCard({required this.minhaParte, required this.euPaguei});
+  final String meId;
+  const _YouInGroupCard({required this.minhaParte, required this.euPaguei, required this.meId});
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final saldo = euPaguei - minhaParte; // positivo = a receber; negativo = a pagar
+    final saldoPositivo = saldo >= -0.005;
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
@@ -343,20 +355,31 @@ class _YouInGroupCard extends StatelessWidget {
               Expanded(
                 child: _YouStat(
                   label: 'Sua parte',
-                  hint: 'o que te coube',
+                  hint: 'seu gasto',
                   value: minhaParte,
                   color: AppColors.verdeAguaProfundo,
                 ),
               ),
-              const SizedBox(width: 16),
+              const SizedBox(width: 12),
               Container(width: 1, height: 40, color: AppColors.areiaNeutra),
-              const SizedBox(width: 16),
+              const SizedBox(width: 12),
               Expanded(
                 child: _YouStat(
                   label: 'Você pagou',
                   hint: 'saiu do seu bolso',
                   value: euPaguei,
                   color: theme.colorScheme.onSurface,
+                ),
+              ),
+              const SizedBox(width: 12),
+              Container(width: 1, height: 40, color: AppColors.areiaNeutra),
+              const SizedBox(width: 12),
+              Expanded(
+                child: _YouStat(
+                  label: saldoPositivo ? 'A receber' : 'A pagar',
+                  hint: 'diferença',
+                  value: saldo.abs(),
+                  color: saldoPositivo ? AppColors.verdeAguaProfundo : AppColors.coralAceso,
                 ),
               ),
             ],
@@ -830,18 +853,47 @@ class _ExpensesTabState extends ConsumerState<_ExpensesTab> {
     );
   }
 
+  /// Uma despesa da lista.
+  ///
+  /// No computador cabe tudo em duas colunas (texto à esquerda, valores à
+  /// direita). No celular isso espremia o nome da despesa entre o valor e o
+  /// "sua parte" — então lá a linha vira duas faixas: título + valor em cima,
+  /// contexto ("quem pagou · quando") e "sua parte" embaixo, cada um numa
+  /// ponta. O tipo já é dito pelo ícone, então some do texto no celular.
   Widget _expenseRow(Expense e) {
     final theme = Theme.of(context);
     final df = DateFormat("d 'de' MMM", 'pt_BR');
     final payer = group.memberById(e.paidByPersonId);
+    final payerName = e.paidByPersonId == 'me' ? 'Você' : (payer?.name ?? '?');
+    final myShare = e.shares['me'];
+    final muted = theme.textTheme.bodySmall?.copyWith(
+      color: theme.colorScheme.onSurface.withValues(alpha: 0.5),
+    );
+
+    final title = Row(
+      children: [
+        Flexible(child: Text(e.description, style: theme.textTheme.titleMedium, overflow: TextOverflow.ellipsis)),
+        if (e.isRecurring) ...[
+          const SizedBox(width: 6),
+          Icon(AppIcons.repeat, size: 14, color: AppColors.verdeAguaProfundo),
+        ],
+      ],
+    );
+
     return InkWell(
       borderRadius: BorderRadius.circular(12),
       onTap: group.viewerRemoved ? null : () => _edit(e),
       child: Padding(
         padding: const EdgeInsets.symmetric(vertical: 10),
-        child: Row(
-          children: [
-            Container(
+        child: LayoutBuilder(
+          builder: (context, c) {
+            final narrow = c.maxWidth < 520;
+            final hasCategory = e.category != null && e.category!.trim().isNotEmpty;
+            final subtitle = narrow || !hasCategory
+                ? '$payerName pagou · ${df.format(e.date)}'
+                : '$payerName pagou · ${df.format(e.date)} · ${e.category}';
+
+            final icon = Container(
               width: 44,
               height: 44,
               decoration: BoxDecoration(
@@ -850,35 +902,71 @@ class _ExpensesTabState extends ConsumerState<_ExpensesTab> {
               ),
               alignment: Alignment.center,
               child: Icon(categoryIcon(e.category), color: AppColors.verdeAguaProfundo, size: 22),
-            ),
-            const SizedBox(width: 12),
-            Expanded(
-              child: Column(
+            );
+
+            if (narrow) {
+              return Row(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Row(
-                    children: [
-                      Flexible(child: Text(e.description, style: theme.textTheme.titleMedium, overflow: TextOverflow.ellipsis)),
-                      if (e.isRecurring) ...[
-                        const SizedBox(width: 6),
-                        Icon(AppIcons.repeat, size: 14, color: AppColors.verdeAguaProfundo),
+                  icon,
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          children: [
+                            Expanded(child: title),
+                            const SizedBox(width: 8),
+                            MoneyText(e.amount, fontSize: 16),
+                          ],
+                        ),
+                        const SizedBox(height: 2),
+                        Row(
+                          children: [
+                            Expanded(child: Text(subtitle, style: theme.textTheme.bodySmall, overflow: TextOverflow.ellipsis)),
+                            if (myShare != null) ...[
+                              const SizedBox(width: 8),
+                              Text('sua parte ${Money.format(myShare)}', style: muted),
+                            ],
+                          ],
+                        ),
+                        if (e.needsRecurrenceReview) _RecurrenceReviewPill(review: e.recurrenceReview),
                       ],
+                    ),
+                  ),
+                  // Sem a seta no celular: a linha inteira já é tocável e cada
+                  // pixel de largura conta.
+                ],
+              );
+            }
+
+            return Row(
+              children: [
+                icon,
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      title,
+                      Text(subtitle, style: theme.textTheme.bodySmall),
+                      if (e.needsRecurrenceReview) _RecurrenceReviewPill(review: e.recurrenceReview),
                     ],
                   ),
-                  Text(
-                    e.category != null && e.category!.trim().isNotEmpty
-                        ? '${payer?.name ?? '?'} pagou · ${df.format(e.date)} · ${e.category}'
-                        : '${payer?.name ?? '?'} pagou · ${df.format(e.date)}',
-                    style: theme.textTheme.bodySmall,
-                  ),
-                  if (e.needsRecurrenceReview) _RecurrenceReviewPill(review: e.recurrenceReview),
-                ],
-              ),
-            ),
-            MoneyText(e.amount, fontSize: 16),
-            const SizedBox(width: 4),
-            Icon(AppIcons.caretRight, size: 16, color: theme.colorScheme.onSurface.withValues(alpha: 0.35)),
-          ],
+                ),
+                Column(
+                  crossAxisAlignment: CrossAxisAlignment.end,
+                  children: [
+                    MoneyText(e.amount, fontSize: 16),
+                    if (myShare != null) Text('sua parte ${Money.format(myShare)}', style: muted),
+                  ],
+                ),
+                const SizedBox(width: 4),
+                Icon(AppIcons.caretRight, size: 16, color: theme.colorScheme.onSurface.withValues(alpha: 0.35)),
+              ],
+            );
+          },
         ),
       ),
     );
@@ -886,6 +974,143 @@ class _ExpensesTabState extends ConsumerState<_ExpensesTab> {
 }
 
 String _cap(String s) => s.isEmpty ? s : '${s[0].toUpperCase()}${s.substring(1)}';
+
+/// Aba Histórico: extrato de atividade da conta — despesas lançadas e acertos
+/// registrados, do mais novo para o mais antigo. Espelha a aba Histórico da
+/// Caixinha (mesma ideia de extrato cronológico).
+///
+/// O **acerto** é o único lançamento daqui sem tela de edição própria (a despesa
+/// se edita na aba Despesas). Quando alguém marca "já paguei/já recebi" sem
+/// querer, o dono da conta desfaz por aqui.
+class _HistoryTab extends ConsumerWidget {
+  final ExpenseGroup group;
+  const _HistoryTab({required this.group});
+
+  Future<void> _undoPayment(BuildContext context, WidgetRef ref, Payment p) async {
+    // Nome + sobrenome: desfazer acerto é ação de registro, e aqui não pode
+    // haver dúvida sobre QUEM — dois "Ana" no grupo viram a mesma linha.
+    final from = group.memberById(p.fromId)?.fullName ?? '?';
+    final to = group.memberById(p.toId)?.fullName ?? '?';
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Desfazer este acerto?'),
+        content: Text(
+          'O acerto de ${Money.format(p.amount)} ($from → $to) sai do histórico e '
+          'a dívida volta a aparecer em "Quem paga quem".',
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancelar')),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: AppColors.coralAceso),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Desfazer'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true) return;
+    await ref.read(repositoryControllerProvider).undoPayment(group.id, p.id);
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Acerto desfeito'), behavior: SnackBarBehavior.floating),
+      );
+    }
+  }
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final theme = Theme.of(context);
+    // Só o dono desfaz — e só o que não dá para corrigir em outro lugar.
+    final canUndo = group.isOwner && !group.viewerRemoved;
+    final raw = <({DateTime date, IconData icon, Color color, String title, String subtitle, double amount, Payment? payment})>[
+      for (final e in group.expenses)
+        (
+          date: e.date,
+          icon: categoryIcon(e.category),
+          color: AppColors.verdeAguaProfundo,
+          title: e.description,
+          subtitle: '${group.memberById(e.paidByPersonId)?.fullName ?? '?'} pagou',
+          amount: e.amount,
+          payment: null,
+        ),
+      for (final p in group.payments)
+        (
+          date: p.date,
+          icon: AppIcons.handshake,
+          color: AppColors.mentaViva,
+          title: 'Acerto',
+          subtitle: '${group.memberById(p.fromId)?.fullName ?? '?'} pagou ${group.memberById(p.toId)?.fullName ?? '?'}',
+          amount: p.amount,
+          payment: p,
+        ),
+    ];
+    // Desempate determinístico por índice original (List.sort não é estável).
+    final indexed = List.generate(raw.length, (i) => (i, raw[i]))
+      ..sort((a, b) {
+        final d = b.$2.date.compareTo(a.$2.date); // mais novo primeiro
+        return d != 0 ? d : b.$1.compareTo(a.$1);
+      });
+
+    if (indexed.isEmpty) {
+      return Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(AppIcons.receipt, size: 56, color: AppColors.mentaViva),
+            const SizedBox(height: 12),
+            Text('Nenhuma atividade ainda', style: theme.textTheme.titleMedium),
+          ],
+        ),
+      );
+    }
+
+    final df = DateFormat("d 'de' MMM 'de' y", 'pt_BR');
+    return ListView.separated(
+      padding: const EdgeInsets.fromLTRB(20, 12, 20, 96),
+      itemCount: indexed.length,
+      separatorBuilder: (_, _) => const Divider(height: 1),
+      itemBuilder: (_, i) {
+        final item = indexed[i].$2;
+        final undoable = canUndo && item.payment != null;
+        return Padding(
+          padding: const EdgeInsets.symmetric(vertical: 10),
+          child: Row(
+            children: [
+              Container(
+                width: 40,
+                height: 40,
+                decoration: BoxDecoration(color: item.color.withValues(alpha: 0.15), borderRadius: BorderRadius.circular(12)),
+                alignment: Alignment.center,
+                child: Icon(item.icon, color: item.color, size: 20),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(item.title, style: theme.textTheme.titleMedium, overflow: TextOverflow.ellipsis),
+                    Text('${item.subtitle} · ${df.format(item.date)}', style: theme.textTheme.bodySmall),
+                  ],
+                ),
+              ),
+              MoneyText(item.amount, fontSize: 15),
+              if (undoable) ...[
+                const SizedBox(width: 4),
+                IconButton(
+                  visualDensity: VisualDensity.compact,
+                  tooltip: 'Desfazer acerto',
+                  onPressed: () => _undoPayment(context, ref, item.payment!),
+                  icon: Icon(AppIcons.undo, size: 18, color: AppColors.coralAceso),
+                ),
+              ],
+            ],
+          ),
+        );
+      },
+    );
+  }
+}
 
 /// Resumo do dia selecionado: total + quebra por tipo em chips. (Itens 4/5)
 class _DayResumo extends StatelessWidget {

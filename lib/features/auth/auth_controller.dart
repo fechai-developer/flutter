@@ -39,6 +39,13 @@ class AuthController {
     return _client.auth.signInWithPassword(email: email.trim(), password: password);
   }
 
+  /// Cadastro por e-mail + senha. Se a confirmação por e-mail estiver
+  /// habilitada no painel Supabase, a resposta vem sem `session` (usuário
+  /// precisa confirmar antes de logar); caso contrário a sessão já abre.
+  Future<AuthResponse> signUp(String email, String password) {
+    return _client.auth.signUp(email: email.trim(), password: password);
+  }
+
   Future<void> signOut() => _client.auth.signOut();
 
   /// Perfil está completo o suficiente para usar o app? (tem nome + chave PIX)

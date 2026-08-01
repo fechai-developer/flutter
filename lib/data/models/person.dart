@@ -27,6 +27,15 @@ class Person {
   final String? photoUrl;
   final String? pixKey;
 
+  /// Conta do Fechaí por trás deste membro, quando já se conhecem — o
+  /// `profile_id` do vínculo. É o identificador ESTÁVEL da pessoa: [id] muda a
+  /// cada grupo (é a linha do vínculo) e o telefone pode mudar de dono.
+  ///
+  /// Null enquanto a pessoa foi só "anotada" por nome+telefone e ainda não tem
+  /// conta (ou não foi religada). Usado para sugerir conhecidos e para ligar o
+  /// convite direto à conta, sem depender do telefone.
+  final String? profileId;
+
   const Person({
     required this.id,
     required this.name,
@@ -34,6 +43,7 @@ class Person {
     this.phone,
     this.photoUrl,
     this.pixKey,
+    this.profileId,
   });
 
   /// Nome completo "Nome Sobrenome" (só o primeiro nome quando não há sobrenome).
@@ -49,13 +59,14 @@ class Person {
 
   /// [lastName] usa sentinela para permitir **limpar** o sobrenome: omitir
   /// mantém o atual; passar `null` explícito apaga. Ex.: `copyWith(lastName: null)`.
-  Person copyWith({String? name, Object? lastName = _unset, String? phone, String? photoUrl, String? pixKey}) => Person(
+  Person copyWith({String? name, Object? lastName = _unset, String? phone, String? photoUrl, String? pixKey, String? profileId}) => Person(
         id: id,
         name: name ?? this.name,
         lastName: identical(lastName, _unset) ? this.lastName : lastName as String?,
         phone: phone ?? this.phone,
         photoUrl: photoUrl ?? this.photoUrl,
         pixKey: pixKey ?? this.pixKey,
+        profileId: profileId ?? this.profileId,
       );
 
   Map<String, dynamic> toJson() => {
@@ -65,6 +76,7 @@ class Person {
         'phone': phone,
         'photo_url': photoUrl,
         'pix_key': pixKey,
+        'profile_id': profileId,
       };
 
   factory Person.fromJson(Map<String, dynamic> json) => Person(
@@ -74,6 +86,7 @@ class Person {
         phone: json['phone'] as String?,
         photoUrl: json['photo_url'] as String?,
         pixKey: json['pix_key'] as String?,
+        profileId: json['profile_id'] as String?,
       );
 }
 

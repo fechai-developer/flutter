@@ -499,6 +499,15 @@ class InMemoryRepository implements AppRepository {
   }
 
   @override
+  Future<ExpenseGroup> undoPayment(String groupId, String paymentId) {
+    final idx = _groups.indexWhere((g) => g.id == groupId);
+    final updated = _groups[idx]
+        .copyWith(payments: _groups[idx].payments.where((p) => p.id != paymentId).toList());
+    _groups[idx] = updated;
+    return _delay(updated);
+  }
+
+  @override
   Future<String?> memberPixKey(String groupId, String personId) {
     final g = _groups.firstWhere((g) => g.id == groupId);
     return _delay(g.memberById(personId)?.pixKey);
@@ -766,7 +775,7 @@ class InMemoryRepository implements AppRepository {
           contributions: [
             ...c.contributions,
             for (final f in contributions)
-              Contribution(id: _uuid.v4(), personId: personId, amount: f.amount, date: f.date, recordedBy: 'me'),
+              Contribution(id: _uuid.v4(), personId: personId, amount: f.amount, date: f.date, recordedBy: 'me', note: 'Quitação de atraso'),
           ],
           // Juro pago vira rendimento da caixinha (dividido entre todos).
           earnings: [
@@ -862,6 +871,20 @@ class InMemoryRepository implements AppRepository {
             ...c.adjustments,
             Adjustment(id: _uuid.v4(), memberId: personId, delta: delta, note: note, date: date ?? DateTime.now()),
           ]));
+
+  @override
+  Future<Caixinha> undoMovement(String caixinhaId, {required MovementKind kind, required String sourceId}) =>
+      _mutateCx(caixinhaId, (c) => switch (kind) {
+            MovementKind.contribution =>
+              c.copyWith(contributions: c.contributions.where((x) => x.id != sourceId).toList()),
+            MovementKind.earning =>
+              c.copyWith(earnings: c.earnings.where((x) => x.id != sourceId).toList()),
+            MovementKind.adjustment =>
+              c.copyWith(adjustments: c.adjustments.where((x) => x.id != sourceId).toList()),
+            // Desfazer uma saída devolve o participante à caixinha (a linha da
+            // saída é o que o marca como fora).
+            MovementKind.exit => c.copyWith(exits: c.exits.where((x) => x.id != sourceId).toList()),
+          });
 
   @override
   Future<Caixinha> addCaixinhaMember(String caixinhaId, Person member) =>

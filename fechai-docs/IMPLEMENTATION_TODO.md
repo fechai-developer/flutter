@@ -198,6 +198,29 @@ o dinheiro rende (banco + juros de empréstimo) e no fim o período é estendido
 - [ ] **Limpar a data-fim na edição** (hoje só cria/muda; `copyWith` não zera para null) e **badge de
   saída/relatório na Home** — polimentos menores.
 
+### ✅ Caixinha — travas de edição + UX do encerramento (sessão 2026-07-31) — FEITO (mock; falta migração)
+Ajustes de produto sobre a revisão de risco de retroatividade (cota/data/cotas por pessoa recalculam
+o passado — ver `fechai-docs/CAIXINHA.md` §10) + polimentos já definidos pelo usuário.
+- [x] Cota, dia de pagamento, data de início e cotas por pessoa **travados após o 1º lançamento**
+  (`Caixinha.hasMovements`); data-fim continua editável. Excluir só quando `!hasMovements` — com
+  lançamento, só "Encerrar e partilhar" (agora deixa a caixinha somente-leitura).
+- [x] Diálogo de encerrar mostra a **partilha por pessoa** (antes só mostrava o valor de quem via a tela).
+- [x] Sheet de Membros ganhou o **X** padrão (`SheetHandle`).
+- [x] Texto "Início · até" removido da aba Início (redundante com a edição).
+- [x] Card "Emprestado" mostra `Emprestado (N)` + juros embutidos entre parênteses (`Caixinha.outstandingLoanInterest`).
+- [x] Histórico: quitação de atraso vira `Contribution.note = 'Quitação de atraso'` (não some como
+  "Aporte" genérico) + ordenação com desempate determinístico.
+- [ ] **Aplicar migração** `20260731120000_caixinha_contribution_note.sql` (coluna `note` em
+  `caixinha_contributions`) — `supabase db push`.
+
+### ✅ Contas — parte do usuário, Histórico e Relatório PDF (sessão 2026-07-31) — FEITO (mock)
+- [x] Linha de despesa mostra a **parte do usuário** entre parênteses, abaixo do valor total
+  (`e.shares['me']`).
+- [x] Nova aba **Histórico** (4ª aba) — extrato de despesas + acertos, mais novo primeiro
+  (`_HistoryTab` em `group_detail_screen.dart`), espelhando a Caixinha.
+- [x] **Relatório PDF** da conta (`group_report.dart`, botão no appbar) — resumo, saldos por
+  participante, acertos sugeridos, despesas por tipo, extrato de despesas e acertos.
+
 ### Etapa S — Segurança 🔒  *(antes de abrir para usuários reais)*
 
 > **Decisões (sessão 2026-07-21)** — respondidas pelo usuário e implementadas na

@@ -11,6 +11,7 @@ import '../../core/utils/masks.dart';
 import '../../core/widgets/member_avatar.dart';
 import '../../core/widgets/member_name.dart';
 import '../../core/widgets/money_text.dart';
+import '../../core/widgets/sheet_handle.dart';
 import '../../core/widgets/wave_card.dart';
 import '../../data/models/caixinha.dart';
 import '../../data/models/person.dart';
@@ -86,7 +87,10 @@ class _CaixinhaDetailScreenState extends ConsumerState<CaixinhaDetailScreen> {
                 itemBuilder: (_) => [
                   if (c.isOpen) const PopupMenuItem(value: 'guide', child: Text('Preencher histórico')),
                   if (c.isOpen) const PopupMenuItem(value: 'close', child: Text('Encerrar e partilhar')),
-                  const PopupMenuItem(value: 'delete', child: Text('Excluir caixinha')),
+                  // Só dá pra excluir de verdade uma caixinha vazia (criada por
+                  // engano) — com lançamento, o caminho é encerrar (preserva o
+                  // histórico de todo mundo).
+                  if (!c.hasMovements) const PopupMenuItem(value: 'delete', child: Text('Excluir caixinha')),
                 ],
               ),
           ],
@@ -165,15 +169,20 @@ class _CaixinhaDetailScreenState extends ConsumerState<CaixinhaDetailScreen> {
             ),
           ),
           const SizedBox(height: 12),
-          _PeriodLine(c: c),
-          const SizedBox(height: 12),
           _MyShareCard(c: c),
           const SizedBox(height: 16),
           Row(
             children: [
               Expanded(child: _Stat(label: 'Em caixa', value: c.cashOnHand, icon: AppIconsFill.coins)),
               const SizedBox(width: 10),
-              Expanded(child: _Stat(label: 'Emprestado', value: c.outstandingReceivables, icon: AppIcons.handshake)),
+              Expanded(
+                child: _Stat(
+                  label: 'Emprestado (${c.openLoans.length})',
+                  value: c.outstandingReceivables,
+                  icon: AppIcons.handshake,
+                  valueCaption: c.outstandingLoanInterest > 0.005 ? '(${Money.format(c.outstandingLoanInterest)} juros)' : null,
+                ),
+              ),
               const SizedBox(width: 10),
               Expanded(child: _Stat(label: 'Rendeu', value: c.totalEarnings, icon: AppIcons.trendingUp, positive: true)),
             ],
@@ -240,6 +249,10 @@ class _CaixinhaDetailScreenState extends ConsumerState<CaixinhaDetailScreen> {
   // ---------- Aba 4: Histórico (extrato detalhado) ----------
   Widget _tabHistorico(Caixinha c) {
     final all = c.movements.reversed.toList(); // mais novo primeiro
+    // Desfazer é do DONO e só com a caixinha aberta: aporte, rendimento, ajuste
+    // e saída não têm tela de edição — quando saem errados, o caminho é apagar
+    // e lançar de novo.
+    final podeDesfazer = c.isOwner && c.isOpen;
     return ListView.builder(
       padding: _padding,
       itemCount: all.isEmpty ? 1 : all.length + 1,
@@ -262,9 +275,55 @@ class _CaixinhaDetailScreenState extends ConsumerState<CaixinhaDetailScreen> {
             ),
           );
         }
-        return _MovementCard(movement: all[i - 1]);
+        final m = all[i - 1];
+        return _MovementCard(
+          movement: m,
+          onUndo: podeDesfazer ? () => _desfazerMovimento(c, m) : null,
+        );
       },
     );
+  }
+
+  /// Desfaz um lançamento do histórico (só o dono). Pede confirmação porque não
+  /// há como reverter: o certo é apagar e lançar de novo com os dados corretos.
+  Future<void> _desfazerMovimento(Caixinha c, CaixinhaMovement m) async {
+    final detalhe = switch (m.kind) {
+      MovementKind.contribution => 'O aporte sai do histórico e a posição de quem aportou volta ao que era.',
+      MovementKind.earning => 'O rendimento sai do histórico e o patrimônio da caixinha volta ao que era.',
+      MovementKind.adjustment => 'O ajuste manual sai do histórico e o saldo volta ao que era antes dele.',
+      MovementKind.exit => 'A saída é cancelada: a pessoa volta a participar da caixinha, com a posição que tinha.',
+    };
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Desfazer este lançamento?'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('${m.label} · ${Money.format(m.amount.abs())}',
+                style: Theme.of(ctx).textTheme.titleMedium),
+            const SizedBox(height: 8),
+            Text(detalhe, style: Theme.of(ctx).textTheme.bodySmall),
+          ],
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancelar')),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: AppColors.coralAceso),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Desfazer'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true) return;
+    await ref.read(repositoryControllerProvider).undoMovement(c.id, kind: m.kind, sourceId: m.sourceId);
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Lançamento desfeito'), behavior: SnackBarBehavior.floating),
+      );
+    }
   }
 
   // ---------- Ações (bottom sheets) ----------
@@ -286,7 +345,7 @@ class _CaixinhaDetailScreenState extends ConsumerState<CaixinhaDetailScreen> {
     final ok = await _sheet<bool>(context, 'Lançar aporte', (ctx, setSheet) {
       final theme = Theme.of(ctx);
       final arrears = arrearsOf(personId);
-      final name = personId == 'me' ? 'Você' : (c.memberById(personId)?.person.name ?? '');
+      final name = personId == 'me' ? 'Você' : (c.memberById(personId)?.person.fullName ?? '');
       return [
         Text('De quem é o aporte?', style: theme.textTheme.bodySmall),
         const SizedBox(height: 8),
@@ -404,7 +463,9 @@ class _CaixinhaDetailScreenState extends ConsumerState<CaixinhaDetailScreen> {
   Future<void> _novoEmprestimo(BuildContext context, WidgetRef ref, Caixinha c) async {
     // Candidatos "pra dentro": membros contribuintes (menos você). Tomadores
     // externos já cadastrados podem ser reaproveitados.
-    final members = c.contributingMembers.where((m) => m.person.id != 'me' && m.inviteAccepted).toList();
+    // Inclui membros que ainda não aceitaram — o empréstimo pode ser registrado
+    // antes de o convite ser aceito (ex.: combinou presencialmente).
+    final members = c.contributingMembers.where((m) => m.person.id != 'me' && !m.inviteDeclined).toList();
     final existingBorrowers = c.borrowers;
     const novo = '__novo__';
     String sel = novo; // por padrão, cadastrar novo de fora
@@ -429,13 +490,13 @@ class _CaixinhaDetailScreenState extends ConsumerState<CaixinhaDetailScreen> {
               ),
               for (final m in existingBorrowers)
                 ChoiceChip(
-                  label: Text('${m.person.name} (de fora)'),
+                  label: Text('${m.person.fullName} (de fora)'),
                   selected: sel == m.person.id,
                   onSelected: (_) => setSheet(() => sel = m.person.id),
                 ),
               for (final m in members)
                 ChoiceChip(
-                  label: Text('${m.person.name} (membro)'),
+                  label: Text(m.person.fullName),
                   selected: sel == m.person.id,
                   onSelected: (_) => setSheet(() => sel = m.person.id),
                 ),
@@ -658,6 +719,8 @@ class _CaixinhaDetailScreenState extends ConsumerState<CaixinhaDetailScreen> {
                     mainAxisSize: MainAxisSize.min,
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
+                      const SheetHandle(),
+                      const SizedBox(height: 12),
                       Row(
                         children: [
                           Text('Membros', style: theme.textTheme.titleLarge),
@@ -696,7 +759,9 @@ class _CaixinhaDetailScreenState extends ConsumerState<CaixinhaDetailScreen> {
   Future<void> _memberSheet(BuildContext context, WidgetRef ref, Caixinha c, CaixinhaMember member) async {
     final ctrl = ref.read(repositoryControllerProvider);
     final pid = member.person.id;
-    final name = pid == 'me' ? 'Você' : member.person.name;
+    // Nome + sobrenome: daqui saem confirmações de saída e de papel, que viram
+    // registro no histórico — não pode ficar ambíguo entre dois homônimos.
+    final name = pid == 'me' ? 'Você' : member.person.fullName;
     var quotas = member.quotas;
     var isTreasurer = member.role == CaixinhaRole.treasurer;
 
@@ -745,10 +810,13 @@ class _CaixinhaDetailScreenState extends ConsumerState<CaixinhaDetailScreen> {
                       Text('Cotas', style: theme.textTheme.titleMedium),
                       const SizedBox(width: 6),
                       Expanded(
-                        child: Text('cada cota = ${Money.format(c.monthlyQuota)}/mês', style: theme.textTheme.bodySmall),
+                        child: Text(
+                          c.hasMovements ? 'travado — já tem lançamento nessa caixinha' : 'cada cota = ${Money.format(c.monthlyQuota)}/mês',
+                          style: theme.textTheme.bodySmall,
+                        ),
                       ),
                       IconButton.outlined(
-                        onPressed: quotas > 1
+                        onPressed: (!c.hasMovements && quotas > 1)
                             ? () {
                                 setSheet(() => quotas--);
                                 ctrl.setMemberQuotas(c.id, pid, quotas);
@@ -758,10 +826,12 @@ class _CaixinhaDetailScreenState extends ConsumerState<CaixinhaDetailScreen> {
                       ),
                       SizedBox(width: 36, child: Text('$quotas', textAlign: TextAlign.center, style: theme.textTheme.titleLarge)),
                       IconButton.outlined(
-                        onPressed: () {
-                          setSheet(() => quotas++);
-                          ctrl.setMemberQuotas(c.id, pid, quotas);
-                        },
+                        onPressed: c.hasMovements
+                            ? null
+                            : () {
+                                setSheet(() => quotas++);
+                                ctrl.setMemberQuotas(c.id, pid, quotas);
+                              },
                         icon: const Icon(Icons.add),
                       ),
                     ],
@@ -853,7 +923,7 @@ class _CaixinhaDetailScreenState extends ConsumerState<CaixinhaDetailScreen> {
 
   Future<void> _ajustarSaldo(BuildContext context, WidgetRef ref, Caixinha c, CaixinhaMember member) async {
     final pid = member.person.id;
-    final name = pid == 'me' ? 'Você' : member.person.name;
+    final name = pid == 'me' ? 'Você' : member.person.fullName;
     final current = c.balanceOf(pid);
     final ctrl = TextEditingController(text: Money.plain(current));
     final ok = await _sheet<bool>(context, 'Ajustar saldo · $name', (ctx, setSheet) {
@@ -1008,12 +1078,117 @@ class _CaixinhaDetailScreenState extends ConsumerState<CaixinhaDetailScreen> {
   }
 
   Future<void> _confirmClose(BuildContext context, WidgetRef ref, Caixinha c) async {
+    final theme = Theme.of(context);
+    final openLoans = c.openLoans;
+    final lateMembers = c.contributingMembers
+        .where((m) => !m.inviteDeclined && c.cotaArrearsOf(m.person.id).isLate)
+        .toList();
+
+    // Bloqueia encerramento enquanto houver pendências — cotas em atraso ou
+    // empréstimos em aberto. Ambos afetam o balanceOf e precisam ser resolvidos
+    // (quitados, registrados ou baixados como perda) para a partilha fechar certo.
+    if (openLoans.isNotEmpty || lateMembers.isNotEmpty) {
+      final tabController = DefaultTabController.of(context);
+
+      Widget blockRow(String label, String value) => Padding(
+            padding: const EdgeInsets.symmetric(vertical: 4),
+            child: Row(
+              children: [
+                Expanded(child: Text(label, style: theme.textTheme.bodyMedium)),
+                Text(value, style: AppTheme.moneyStyle(fontSize: 14)),
+              ],
+            ),
+          );
+
+      await showDialog<void>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('Pendências em aberto'),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Resolva os itens abaixo antes de encerrar e partilhar.',
+                  style: theme.textTheme.bodyMedium,
+                ),
+                if (lateMembers.isNotEmpty) ...[
+                  const SizedBox(height: 14),
+                  Text('Cotas em atraso', style: theme.textTheme.titleSmall),
+                  const SizedBox(height: 6),
+                  for (final m in lateMembers)
+                    blockRow(
+                      m.person.id == 'me' ? 'Você' : m.person.fullName,
+                      Money.format(c.cotaArrearsOf(m.person.id).total),
+                    ),
+                ],
+                if (openLoans.isNotEmpty) ...[
+                  const SizedBox(height: 14),
+                  Text('Empréstimos em aberto', style: theme.textTheme.titleSmall),
+                  const SizedBox(height: 6),
+                  for (final l in openLoans)
+                    blockRow(l.borrowerName, Money.format(c.outstandingOf(l))),
+                ],
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Fechar')),
+            if (lateMembers.isNotEmpty)
+              OutlinedButton(
+                onPressed: () {
+                  Navigator.pop(ctx);
+                  tabController.animateTo(1); // aba Quitação
+                },
+                child: const Text('Ver cotas'),
+              ),
+            if (openLoans.isNotEmpty)
+              FilledButton(
+                onPressed: () {
+                  Navigator.pop(ctx);
+                  tabController.animateTo(2); // aba Empréstimos
+                },
+                child: const Text('Ver empréstimos'),
+              ),
+          ],
+        ),
+      );
+      return;
+    }
+
+    // Sem pendências: confirma encerramento com partilha por pessoa.
+    final members = _orderedMembers(c);
     final ok = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
         title: const Text('Encerrar e partilhar?'),
-        content: Text('A caixinha para de receber aportes e a partilha final fica registrada. '
-            'Cada um leva ${Money.format(c.balanceOf('me'))} (você) proporcional à participação.'),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text('A caixinha para de receber aportes e vira somente-leitura. '
+                  'Cada um leva, proporcional à participação:'),
+              const SizedBox(height: 12),
+              for (final m in members)
+                Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 3),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Expanded(
+                        child: Text(m.person.id == 'me' ? 'Você' : m.person.fullName,
+                            style: theme.textTheme.bodyMedium, overflow: TextOverflow.ellipsis),
+                      ),
+                      Text(Money.format(c.balanceOf(m.person.id)),
+                          style: AppTheme.moneyStyle(fontSize: 14)),
+                    ],
+                  ),
+                ),
+            ],
+          ),
+        ),
         actions: [
           TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancelar')),
           FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Encerrar')),
@@ -1028,7 +1203,7 @@ class _CaixinhaDetailScreenState extends ConsumerState<CaixinhaDetailScreen> {
       context: context,
       builder: (ctx) => AlertDialog(
         title: const Text('Excluir caixinha?'),
-        content: const Text('Todos os lançamentos serão apagados. Esta ação não pode ser desfeita.'),
+        content: const Text('Essa caixinha ainda não tem nenhum lançamento — a exclusão não pode ser desfeita.'),
         actions: [
           TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancelar')),
           FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Excluir')),
@@ -1185,30 +1360,6 @@ class _WaveChip extends StatelessWidget {
   }
 }
 
-/// Linha discreta com o período da caixinha (início da 1ª parcela + fim).
-class _PeriodLine extends StatelessWidget {
-  final Caixinha c;
-  const _PeriodLine({required this.c});
-
-  static String _fmt(DateTime d) =>
-      '${d.day.toString().padLeft(2, '0')}/${d.month.toString().padLeft(2, '0')}/${d.year}';
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final label = c.endDate != null
-        ? 'Início ${_fmt(c.periodStart)} · até ${_fmt(c.endDate!)}'
-        : 'Início ${_fmt(c.periodStart)}';
-    return Row(
-      children: [
-        Icon(AppIconsFill.calendarBlank, size: 14, color: AppColors.textoSuave),
-        const SizedBox(width: 6),
-        Text(label, style: theme.textTheme.bodySmall),
-      ],
-    );
-  }
-}
-
 class _MyShareCard extends StatelessWidget {
   final Caixinha c;
   const _MyShareCard({required this.c});
@@ -1262,7 +1413,12 @@ class _Stat extends StatelessWidget {
   final double value;
   final IconData icon;
   final bool positive;
-  const _Stat({required this.label, required this.value, required this.icon, this.positive = false});
+
+  /// Texto pequeno e discreto mostrado ao lado do valor (ex.: parte de juros
+  /// embutida no valor emprestado).
+  final String? valueCaption;
+
+  const _Stat({required this.label, required this.value, required this.icon, this.positive = false, this.valueCaption});
 
   @override
   Widget build(BuildContext context) {
@@ -1279,7 +1435,16 @@ class _Stat extends StatelessWidget {
         children: [
           Icon(icon, size: 18, color: positive ? AppColors.verdeAguaProfundo : AppColors.textoSuave),
           const SizedBox(height: 8),
-          MoneyText(value, fontSize: 15, color: positive && value > 0 ? AppColors.verdeAguaProfundo : null),
+          Wrap(
+            crossAxisAlignment: WrapCrossAlignment.center,
+            spacing: 4,
+            children: [
+              MoneyText(value, fontSize: 15, color: positive && value > 0 ? AppColors.verdeAguaProfundo : null),
+              if (valueCaption != null)
+                Text(valueCaption!,
+                    style: theme.textTheme.bodySmall?.copyWith(color: AppColors.textoSuave, fontSize: 11)),
+            ],
+          ),
           Text(label, style: theme.textTheme.bodySmall),
         ],
       ),
@@ -1811,7 +1976,7 @@ class _CotasSectionState extends State<_CotasSection> {
           Padding(
             padding: const EdgeInsets.only(bottom: 4),
             child: Text(
-              c.iAmTreasurer
+              c.iAmTreasurer && c.isOpen
                   ? 'Mês à frente — dá pra adiantar a cota de quem quiser.'
                   : 'Mês à frente — cota ainda não vencida.',
               style: theme.textTheme.bodySmall?.copyWith(color: AppColors.textoSuave),
@@ -1842,7 +2007,7 @@ class _CotasSectionState extends State<_CotasSection> {
                     // Registro do mês (editável: valor + data). Vale para mês
                     // vencido também — é lançamento de aporte, SEM juros. A
                     // quitação com juros fica no bloco "Em atraso" abaixo.
-                    if (c.iAmTreasurer) ...[
+                    if (c.iAmTreasurer && c.isOpen) ...[
                       const SizedBox(width: 8),
                       InkWell(
                         onTap: () => _registrarCotaMes(context, c, m, _sel, pending),
@@ -1863,7 +2028,7 @@ class _CotasSectionState extends State<_CotasSection> {
         // Quitação (com juros) — só tesoureiro/dono, em seção própria recolhível
         // com badge da quantidade. Aparece só quando há atraso e há dia de
         // vencimento definido. Membro comum vê o status por mês na lista acima.
-        if (c.iAmTreasurer && c.paymentDay != null)
+        if (c.iAmTreasurer && c.isOpen && c.paymentDay != null)
           Builder(builder: (context) {
             final list = ativos
                 .map((m) => (m: m, a: c.cotaArrearsOf(m.person.id, now: _now)))
@@ -2711,7 +2876,10 @@ class _FabOption extends StatelessWidget {
 /// por quem, o valor e o patrimônio ANTES → DEPOIS da movimentação.
 class _MovementCard extends StatelessWidget {
   final CaixinhaMovement movement;
-  const _MovementCard({required this.movement});
+
+  /// Ação de desfazer — só chega preenchida para o dono (ver `_tabHistorico`).
+  final VoidCallback? onUndo;
+  const _MovementCard({required this.movement, this.onUndo});
 
   static String _fmtDate(DateTime d) =>
       '${d.day.toString().padLeft(2, '0')}/${d.month.toString().padLeft(2, '0')}/${d.year}';
@@ -2757,6 +2925,20 @@ class _MovementCard extends StatelessWidget {
           _kv(theme, 'Quando', _fmtDate(m.date)),
           _kv(theme, 'Lançado por', m.recordedByName ?? 'a própria pessoa'),
           _kv(theme, 'Patrimônio', '${Money.format(antes)}  →  ${Money.format(m.balanceAfter)}'),
+          if (onUndo != null)
+            Align(
+              alignment: Alignment.centerRight,
+              child: TextButton.icon(
+                style: TextButton.styleFrom(
+                  foregroundColor: AppColors.coralAceso,
+                  visualDensity: VisualDensity.compact,
+                  textStyle: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
+                ),
+                onPressed: onUndo,
+                icon: Icon(AppIcons.undo, size: 16),
+                label: const Text('Desfazer'),
+              ),
+            ),
         ],
       ),
     );

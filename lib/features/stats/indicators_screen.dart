@@ -20,10 +20,21 @@ class IndicatorsScreen extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final theme = Theme.of(context);
     final async = ref.watch(globalIndicatorsProvider);
+    // Em tela larga o Resumo é item fixo da sidebar (não precisa de "voltar").
+    // No celular ele saiu da barra de baixo e se chega por um botão na Home —
+    // então aqui é uma tela de leitura, com o caminho de volta explícito.
+    final wide = MediaQuery.sizeOf(context).width >= 900;
 
     return Scaffold(
       appBar: AppBar(
         automaticallyImplyLeading: false,
+        leading: wide
+            ? null
+            : IconButton(
+                icon: Icon(AppIcons.arrowLeft),
+                tooltip: 'Voltar',
+                onPressed: () => context.go('/home'),
+              ),
         title: const Text('Indicadores'),
       ),
       body: async.when(

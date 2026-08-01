@@ -104,6 +104,11 @@ class CaixinhaMovement {
   final double amount; // efeito (com sinal) no patrimônio
   final double balanceAfter; // patrimônio depois desta movimentação
 
+  /// Id do lançamento de origem (aporte/rendimento/ajuste/saída). É o que
+  /// permite ao dono **desfazer** a movimentação pelo histórico — ela não tem
+  /// tela de edição própria como uma despesa tem.
+  final String sourceId;
+
   /// Nome (completo) de quem REGISTROU a movimentação, quando conhecido e
   /// diferente da pessoa a que ela se refere. Null quando não há autoria
   /// registrada (lançamentos antigos) ou quando o autor é a própria pessoa.
@@ -115,6 +120,7 @@ class CaixinhaMovement {
     required this.label,
     required this.amount,
     required this.balanceAfter,
+    required this.sourceId,
     this.recordedByName,
   });
 }
@@ -129,12 +135,18 @@ class Contribution {
   final DateTime date;
   final String? recordedBy; // personId de quem registrou
 
+  /// Contexto de onde veio o aporte, quando não é um aporte comum — ex.:
+  /// "Quitação de atraso" (veio de `settleCotaArrears`). Null = aporte comum
+  /// ("Registrar"/"Aporte" pelo Lançar), rótulo padrão no histórico.
+  final String? note;
+
   const Contribution({
     required this.id,
     required this.personId,
     required this.amount,
     required this.date,
     this.recordedBy,
+    this.note,
   });
 }
 
@@ -529,6 +541,14 @@ class Caixinha {
   bool get isOwner => ownerId == 'me';
   bool get isOpen => status == CaixinhaStatus.open;
   bool get isClosed => status == CaixinhaStatus.closed;
+
+  /// Já existe algum lançamento (aporte, rendimento, empréstimo, ajuste ou
+  /// saída)? A partir daí, cota/dia de pagamento/data de início/cotas por
+  /// pessoa deixam de ser editáveis — mudar esses valores reescreveria o
+  /// cálculo de atraso e juros de meses já passados (ver `cotaArrearsOf`, que
+  /// recalcula tudo a partir do estado atual, não de um histórico versionado).
+  bool get hasMovements =>
+      contributions.isNotEmpty || earnings.isNotEmpty || loans.isNotEmpty || adjustments.isNotEmpty || exits.isNotEmpty;
 
   bool isTreasurer(String personId) {
     if (personId == ownerId || (personId == 'me' && isOwner)) return true;
@@ -975,6 +995,12 @@ class Caixinha {
 
   List<Loan> get openLoans => loans.where((l) => !isSettled(l)).toList();
 
+  /// Juros já lançados nos empréstimos ainda em aberto (parte do valor
+  /// emprestado que é juro, não principal) — para exibir "(R$X de juros)"
+  /// junto do total emprestado.
+  double get outstandingLoanInterest =>
+      openLoans.fold(0.0, (a, l) => a + accruedInterestOf(l.id));
+
   /// Total a receber de todos os empréstimos (quitados contam 0) — está
   /// emprestado, fora do caixa.
   double get outstandingReceivables => loans.fold(0.0, (a, l) => a + outstandingOf(l));
@@ -1068,29 +1094,45 @@ class Caixinha {
       return fullNameOf(recorder);
     }
 
-    final raw = <({DateTime date, int order, MovementKind kind, String label, double amount, String? by})>[
+    final raw = <({DateTime date, int order, MovementKind kind, String label, double amount, String id, String? by})>[
       for (final c in contributions)
-        (date: c.date, order: 0, kind: MovementKind.contribution, label: 'Aporte · ${fullNameOf(c.personId)}', amount: c.amount, by: by(c.recordedBy, c.personId)),
+        (
+          date: c.date,
+          order: 0,
+          kind: MovementKind.contribution,
+          label: c.note != null ? '${c.note} · ${fullNameOf(c.personId)}' : 'Aporte · ${fullNameOf(c.personId)}',
+          amount: c.amount,
+          id: c.id,
+          by: by(c.recordedBy, c.personId),
+        ),
       for (final a in adjustments)
-        (date: a.date, order: 0, kind: MovementKind.adjustment, label: 'Ajuste manual · ${fullNameOf(a.memberId)}', amount: a.delta, by: by(a.recordedBy, a.memberId)),
+        (date: a.date, order: 0, kind: MovementKind.adjustment, label: 'Ajuste manual · ${fullNameOf(a.memberId)}', amount: a.delta, id: a.id, by: by(a.recordedBy, a.memberId)),
       for (final e in earnings)
-        (date: e.date, order: 1, kind: MovementKind.earning, label: e.note ?? (e.fromLoan ? 'Juros de empréstimo' : 'Rendimento'), amount: e.amount, by: by(e.recordedBy, null)),
+        (date: e.date, order: 1, kind: MovementKind.earning, label: e.note ?? (e.fromLoan ? 'Juros de empréstimo' : 'Rendimento'), amount: e.amount, id: e.id, by: by(e.recordedBy, null)),
       for (final x in exits)
-        (date: x.date, order: 2, kind: MovementKind.exit, label: '${fullNameOf(x.memberId)} saiu (devolução)', amount: -x.refund, by: by(x.recordedBy, x.memberId)),
-    ]..sort((a, b) {
-        final d = a.date.compareTo(b.date);
-        return d != 0 ? d : a.order.compareTo(b.order);
+        (date: x.date, order: 2, kind: MovementKind.exit, label: '${fullNameOf(x.memberId)} saiu (devolução)', amount: -x.refund, id: x.id, by: by(x.recordedBy, x.memberId)),
+    ];
+    // Índice original como desempate final e determinístico: `List.sort` não
+    // garante estabilidade, então sem isso lançamentos com a mesma data (ou o
+    // mesmo dia sem hora definida) podiam embaralhar de ordem a cada rebuild.
+    final indexed = List.generate(raw.length, (i) => (i, raw[i]))
+      ..sort((a, b) {
+        final d = a.$2.date.compareTo(b.$2.date);
+        if (d != 0) return d;
+        final o = a.$2.order.compareTo(b.$2.order);
+        return o != 0 ? o : a.$1.compareTo(b.$1);
       });
     var running = 0.0;
     return [
-      for (final m in raw)
+      for (final entry in indexed)
         CaixinhaMovement(
-          date: m.date,
-          kind: m.kind,
-          label: m.label,
-          amount: m.amount,
-          balanceAfter: running += m.amount,
-          recordedByName: m.by,
+          date: entry.$2.date,
+          kind: entry.$2.kind,
+          label: entry.$2.label,
+          amount: entry.$2.amount,
+          balanceAfter: running += entry.$2.amount,
+          sourceId: entry.$2.id,
+          recordedByName: entry.$2.by,
         ),
     ];
   }

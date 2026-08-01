@@ -26,12 +26,13 @@ Future<void> showEditCaixinhaSheet(BuildContext context, Caixinha c) {
 class _DateTile extends StatelessWidget {
   final String label;
   final String text;
-  final VoidCallback onTap;
+  final VoidCallback? onTap;
   const _DateTile({required this.label, required this.text, required this.onTap});
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final disabled = onTap == null;
     return InkWell(
       borderRadius: BorderRadius.circular(12),
       onTap: onTap,
@@ -40,17 +41,22 @@ class _DateTile extends StatelessWidget {
         decoration: BoxDecoration(
           borderRadius: BorderRadius.circular(12),
           border: Border.all(color: AppColors.areiaNeutra),
+          color: disabled ? AppColors.areiaNeutra.withValues(alpha: 0.3) : null,
         ),
         child: Row(
           children: [
-            Icon(AppIconsFill.calendarBlank, size: 18, color: AppColors.verdeAguaProfundo),
+            Icon(AppIconsFill.calendarBlank,
+                size: 18, color: disabled ? AppColors.textoSuave : AppColors.verdeAguaProfundo),
             const SizedBox(width: 10),
             Expanded(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(label, style: theme.textTheme.bodySmall),
-                  Text(text, style: theme.textTheme.titleMedium),
+                  Text(text,
+                      style: disabled
+                          ? theme.textTheme.titleMedium?.copyWith(color: AppColors.textoSuave)
+                          : theme.textTheme.titleMedium),
                 ],
               ),
             ),
@@ -142,6 +148,7 @@ class _EditCaixinhaSheetState extends ConsumerState<EditCaixinhaSheet> {
     final theme = Theme.of(context);
     final warn = _interest > 10;
     final accent = warn ? AppColors.coralAceso : AppColors.verdeAguaProfundo;
+    final locked = widget.caixinha.hasMovements;
 
     return Padding(
       padding: EdgeInsets.only(bottom: MediaQuery.viewInsetsOf(context).bottom),
@@ -160,6 +167,21 @@ class _EditCaixinhaSheetState extends ConsumerState<EditCaixinhaSheet> {
               const SheetHandle(),
               const SizedBox(height: 20),
               Text('Editar caixinha', style: theme.textTheme.titleLarge),
+              if (locked) ...[
+                const SizedBox(height: 8),
+                Container(
+                  padding: const EdgeInsets.all(10),
+                  decoration: BoxDecoration(
+                    color: AppColors.mentaViva.withValues(alpha: 0.15),
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: Text(
+                    'Já tem lançamento nessa caixinha — cota, dia de pagamento, cotas por pessoa e '
+                    'início ficam travados pra não bagunçar o cálculo de atraso/juros já feito.',
+                    style: theme.textTheme.bodySmall,
+                  ),
+                ),
+              ],
               const SizedBox(height: 16),
               EmojiPicker(
                 value: _emoji,
@@ -171,23 +193,27 @@ class _EditCaixinhaSheetState extends ConsumerState<EditCaixinhaSheet> {
               const SizedBox(height: 12),
               TextField(
                 controller: _quota,
+                enabled: !locked,
                 keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                decoration: const InputDecoration(
+                decoration: InputDecoration(
                   labelText: 'Valor da cota por participante',
                   prefixText: r'R$ ',
-                  helperText: 'Vale pra frente — não altera aportes já lançados.',
+                  helperText: locked ? 'Travado: já tem aporte lançado com esse valor.' : 'Vale pra frente — não altera aportes já lançados.',
                   helperMaxLines: 2,
                 ),
               ),
               const SizedBox(height: 12),
               TextField(
                 controller: _paymentDay,
+                enabled: !locked,
                 keyboardType: TextInputType.number,
                 inputFormatters: [FilteringTextInputFormatter.digitsOnly, LengthLimitingTextInputFormatter(2)],
-                decoration: const InputDecoration(
+                decoration: InputDecoration(
                   labelText: 'Dia do pagamento (todo mês)',
                   hintText: 'ex.: 10',
-                  helperText: 'A partir desse dia, a cota não paga passa a render juros. Opcional.',
+                  helperText: locked
+                      ? 'Travado: mudar agora recalcularia atraso/juros dos meses já passados.'
+                      : 'A partir desse dia, a cota não paga passa a render juros. Opcional.',
                   helperMaxLines: 3,
                 ),
               ),
@@ -200,10 +226,12 @@ class _EditCaixinhaSheetState extends ConsumerState<EditCaixinhaSheet> {
                     child: _DateTile(
                       label: 'Primeira parcela',
                       text: _fmt(_startDate),
-                      onTap: () async {
-                        final d = await _pickDate(_startDate);
-                        if (d != null) setState(() => _startDate = d);
-                      },
+                      onTap: locked
+                          ? null
+                          : () async {
+                              final d = await _pickDate(_startDate);
+                              if (d != null) setState(() => _startDate = d);
+                            },
                     ),
                   ),
                   const SizedBox(width: 12),

@@ -79,7 +79,8 @@ class _CaixinhaCard extends ConsumerWidget {
         borderRadius: BorderRadius.circular(AppTheme.cardRadius),
         child: InkWell(
           borderRadius: BorderRadius.circular(AppTheme.cardRadius),
-          onTap: () => context.go('/caixinhas/${c.id}'),
+          // Convite pendente ou recusado: bloqueia entrada até aceitar.
+          onTap: invite != null ? null : () => context.go('/caixinhas/${c.id}'),
           child: Container(
             padding: const EdgeInsets.all(16),
             decoration: BoxDecoration(

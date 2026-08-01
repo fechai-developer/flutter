@@ -9,8 +9,13 @@ import '../../data/realtime/realtime_sync.dart';
 import '../../data/repositories/providers.dart';
 import '../../theme/app_theme.dart';
 
-/// Casca de navegação. Mobile: bottom tabs (4 itens). Web/tela larga: sidebar
+/// Casca de navegação. Mobile: bottom tabs. Web/tela larga: sidebar
 /// equivalente (DESIGN_SYSTEM.md). O breakpoint troca automaticamente.
+///
+/// O celular mostra só as 5 primeiras abas: seis ícones com legenda deixam a
+/// barra poluída e ilegível. "Resumo" é leitura, não navegação do dia a dia —
+/// no celular ele fica no botão do cabeçalho da Home; na sidebar (tela larga),
+/// onde sobra espaço, continua como item fixo.
 ///
 /// É aqui que a sincronização em tempo real fica "viva": enquanto o shell está
 /// montado, `realtimeSyncProvider` mantém o canal do Supabase aberto. Ao voltar
@@ -28,6 +33,10 @@ class AppShell extends ConsumerStatefulWidget {
     _Dest('Caixinha', AppIcons.piggyBank, AppIconsFill.piggyBank),
     _Dest('Resumo', AppIcons.chartBar, AppIcons.chartBar),
   ];
+
+  /// Quantas abas cabem na barra de baixo (celular). "Resumo" é a última e fica
+  /// de fora — ver o comentário da classe.
+  static const _mobileTabs = 5;
 
   @override
   ConsumerState<AppShell> createState() => _AppShellState();
@@ -114,6 +123,11 @@ class _AppShellState extends ConsumerState<AppShell> with WidgetsBindingObserver
       );
     }
 
+    // Estando no Resumo (fora da barra), nenhuma aba está "ativa". O
+    // NavigationBar exige um índice válido, então destacamos o Início — que é
+    // para onde o "voltar" do Resumo leva.
+    final selected = current < AppShell._mobileTabs ? current : 0;
+
     return Scaffold(
       body: widget.navigationShell,
       bottomNavigationBar: NavigationBarTheme(
@@ -125,11 +139,11 @@ class _AppShellState extends ConsumerState<AppShell> with WidgetsBindingObserver
           ),
         ),
         child: NavigationBar(
-          selectedIndex: current,
+          selectedIndex: selected,
           onDestinationSelected: _go,
           height: 68,
           destinations: [
-            for (int i = 0; i < AppShell._destinations.length; i++)
+            for (int i = 0; i < AppShell._mobileTabs; i++)
               NavigationDestination(
                 icon: _Badged(count: badgeFor(i), child: Icon(AppShell._destinations[i].icon, size: 24)),
                 selectedIcon: _Badged(

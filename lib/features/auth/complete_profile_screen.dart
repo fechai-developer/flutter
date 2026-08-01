@@ -49,11 +49,15 @@ class _CompleteProfileScreenState extends ConsumerState<CompleteProfileScreen> {
     if (me == null) return;
     setState(() => _loading = true);
     final last = _lastName.text.trim();
+    // Campo em branco não pode gravar '': o telefone é a chave que religa os
+    // vínculos criados antes do cadastro, e '' não casa com número nenhum.
+    // Null aqui simplesmente não mexe no que já estava no perfil.
+    final phone = digitsOf(_phone.text);
     await ref.read(repositoryControllerProvider).updateProfile(
           me.copyWith(
             name: _name.text.trim(),
             lastName: last.isEmpty ? null : last,
-            phone: digitsOf(_phone.text),
+            phone: phone.isEmpty ? null : phone,
             pixKey: normalizePixKey(_pix.text),
           ),
         );
@@ -63,14 +67,14 @@ class _CompleteProfileScreenState extends ConsumerState<CompleteProfileScreen> {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    // pré-preenche com o que já veio do perfil
+    // pré-preenche só o nome (identidade já conhecida); celular e PIX ficam
+    // em branco — são dados que a pessoa completa agora, não repete o que
+    // já tinha, mesmo que o perfil já tenha algo salvo.
     final me = ref.watch(currentUserProvider).valueOrNull;
     if (me != null && !_prefilled) {
       _prefilled = true;
       if (me.name.isNotEmpty && me.name != 'Você' && me.name != 'Novo usuário') _name.text = me.name;
       if (me.lastName != null) _lastName.text = me.lastName!;
-      if (me.phone != null) _phone.text = me.phone!;
-      if (me.pixKey != null) _pix.text = me.pixKey!;
     }
 
     return Scaffold(
@@ -117,7 +121,13 @@ class _CompleteProfileScreenState extends ConsumerState<CompleteProfileScreen> {
                     ],
                   ),
                   const SizedBox(height: 14),
-                  Text('Celular (opcional)', style: theme.textTheme.labelLarge),
+                  Text('Celular', style: theme.textTheme.labelLarge),
+                  const SizedBox(height: 4),
+                  // É por este número que reconhecemos quem já te incluiu numa
+                  // conta antes de você ter cadastro. Sem ele, esses convites
+                  // não aparecem — por isso a explicação em vez de "(opcional)".
+                  Text('É assim que a gente acha as contas em que já te incluíram.',
+                      style: theme.textTheme.bodySmall),
                   const SizedBox(height: 8),
                   TextField(
                     controller: _phone,
@@ -126,9 +136,12 @@ class _CompleteProfileScreenState extends ConsumerState<CompleteProfileScreen> {
                     decoration: const InputDecoration(prefixText: '+55  ', hintText: '(11) 99999-8888'),
                   ),
                   const SizedBox(height: 14),
+                  // A dúvida recorrente aqui é "qual Pix eu ponho?". O rótulo
+                  // fala na 1ª pessoa e o apoio explica o para quê: é a SUA
+                  // chave, e ela serve para os outros te pagarem.
                   Row(
                     children: [
-                      Text('Chave PIX', style: theme.textTheme.labelLarge),
+                      Text('Sua chave Pix', style: theme.textTheme.labelLarge),
                       const SizedBox(width: 6),
                       Container(
                         padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
@@ -136,14 +149,18 @@ class _CompleteProfileScreenState extends ConsumerState<CompleteProfileScreen> {
                           color: AppColors.mentaViva.withValues(alpha: 0.3),
                           borderRadius: BorderRadius.circular(100),
                         ),
-                        child: Text('recebe aqui', style: theme.textTheme.bodySmall),
+                        child: Text('é por onde você recebe', style: theme.textTheme.bodySmall),
                       ),
                     ],
                   ),
+                  const SizedBox(height: 4),
+                  Text('Compartilhe sua chave Pix para que os outros consigam te pagar.',
+                      style: theme.textTheme.bodyMedium),
                   const SizedBox(height: 8),
                   PixKeyField(controller: _pix),
                   const SizedBox(height: 6),
-                  Text('Sem chave PIX você ainda divide contas, mas não consegue receber cobranças.',
+                  Text('Ela só aparece para quem divide contas com você, na hora de te pagar. '
+                      'Sem chave Pix dá pra dividir normalmente — só não dá pra receber pelo app.',
                       style: theme.textTheme.bodySmall),
                   const SizedBox(height: 28),
                   ElevatedButton(

@@ -55,6 +55,10 @@ abstract class AppRepository {
   Future<ExpenseGroup> removeMember(String groupId, String personId);
   /// Registra um acerto: [fromId] pagou [amount] para [toId] (#4/#5).
   Future<ExpenseGroup> settleUp(String groupId, {required String fromId, required String toId, required double amount});
+  /// Desfaz um acerto registrado por engano ("marquei que paguei sem querer").
+  /// Um acerto não tem tela de edição — some do histórico e o saldo volta a
+  /// aparecer. Só o dono da conta pode desfazer.
+  Future<ExpenseGroup> undoPayment(String groupId, String paymentId);
   /// Chave PIX de um membro do grupo, só se permitido (RLS/payee_info, #7). Null se indisponível.
   Future<String?> memberPixKey(String groupId, String personId);
   Future<ExpenseGroup> updateGroup(String groupId, {String? name, String? emoji, double? monthlyInterestPct});
@@ -164,6 +168,12 @@ abstract class AppRepository {
     required double newCharge,
     DateTime? date,
   });
+  /// Desfaz uma movimentação do histórico (aporte, rendimento, ajuste ou
+  /// saída). São lançamentos sem tela de edição própria: quando saem errados, o
+  /// caminho é apagar e lançar de novo. Só o dono da caixinha pode desfazer.
+  ///
+  /// [sourceId] é o `CaixinhaMovement.sourceId` da linha do histórico.
+  Future<Caixinha> undoMovement(String caixinhaId, {required MovementKind kind, required String sourceId});
   /// Toggle de tesoureiro (só o dono pode eleger/remover).
   Future<Caixinha> setTreasurer(String caixinhaId, String personId, bool isTreasurer);
   /// Define quantas cotas um participante tem (multiplica o aporte sugerido).

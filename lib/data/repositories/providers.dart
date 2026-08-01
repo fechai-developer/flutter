@@ -124,6 +124,12 @@ class RepositoryController {
     ref.invalidate(groupsProvider);
   }
 
+  /// Desfaz um acerto lançado por engano (só o dono — ver aba Histórico).
+  Future<void> undoPayment(String groupId, String paymentId) async {
+    await _repo.undoPayment(groupId, paymentId);
+    ref.invalidate(groupsProvider);
+  }
+
   Future<String?> memberPixKey(String groupId, String personId) =>
       _repo.memberPixKey(groupId, personId);
 
@@ -193,6 +199,13 @@ class RepositoryController {
   Future<void> updateProfile(Person user) async {
     await _repo.updateProfile(user);
     ref.invalidate(currentUserProvider);
+    // Informar o telefone religa os vínculos criados antes do cadastro (quem te
+    // adicionou quando você ainda não tinha conta) — então as listas e os
+    // convites podem ter mudado agora.
+    ref.invalidate(groupsProvider);
+    ref.invalidate(subscriptionsProvider);
+    ref.invalidate(caixinhasProvider);
+    ref.invalidate(pendingInvitesProvider);
   }
 
   // ---- Caixinhas ----
@@ -302,6 +315,12 @@ class RepositoryController {
 
   Future<void> adjustBalance(String caixinhaId, String personId, {required double delta, String? note, DateTime? date}) async {
     await _repo.adjustBalance(caixinhaId, personId, delta: delta, note: note, date: date);
+    ref.invalidate(caixinhasProvider);
+  }
+
+  /// Desfaz um lançamento do histórico da caixinha (só o dono).
+  Future<void> undoMovement(String caixinhaId, {required MovementKind kind, required String sourceId}) async {
+    await _repo.undoMovement(caixinhaId, kind: kind, sourceId: sourceId);
     ref.invalidate(caixinhasProvider);
   }
 
