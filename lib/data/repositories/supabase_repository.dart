@@ -188,7 +188,7 @@ class SupabaseRepository implements AppRepository {
   static const _groupSelect =
       'id,name,emoji,owner_id,monthly_interest_pct,created_at,'
       'group_members(id,profile_id,name,last_name,phone,status,removed_at),'
-      'expenses(id,description,amount,paid_by,split_type,date,recurrence,recurrence_until,recurrence_day,recurrence_review,recurrence_parent_id,occurrence_period,category,expense_shares(member_id,share)),'
+      'expenses(id,description,amount,paid_by,split_type,date,recurrence,recurrence_until,recurrence_day,recurrence_review,recurrence_parent_id,occurrence_period,category,expense_shares(member_id,share,split_input)),'
       'payments(id,from_member,to_member,amount,created_at)';
 
   @override
@@ -231,9 +231,15 @@ class SupabaseRepository implements AppRepository {
     final expenses = <Expense>[];
     for (final e in (g['expenses'] as List).cast<Map<String, dynamic>>()) {
       final shares = <String, double>{};
+      // O que foi digitado no rateio (partes/%/valor). Fica null quando NENHUMA
+      // linha tem o dado — despesa igual ou anterior à coluna `split_input`.
+      final inputs = <String, double>{};
       for (final s in (e['expense_shares'] as List).cast<Map<String, dynamic>>()) {
         final pid = gmToPerson[s['member_id']];
-        if (pid != null) shares[pid] = (s['share'] as num).toDouble();
+        if (pid == null) continue;
+        shares[pid] = (s['share'] as num).toDouble();
+        final typed = s['split_input'] as num?;
+        if (typed != null) inputs[pid] = typed.toDouble();
       }
       expenses.add(Expense(
         id: e['id'] as String,
@@ -242,6 +248,7 @@ class SupabaseRepository implements AppRepository {
         paidByPersonId: gmToPerson[e['paid_by']] ?? 'me',
         type: SplitType.values.byName(e['split_type'] as String),
         shares: shares,
+        splitInputs: inputs.isEmpty ? null : inputs,
         date: DateTime.parse(e['date'] as String),
         recurrence: Recurrence.values.byName((e['recurrence'] as String?) ?? 'none'),
         recurrenceUntil: e['recurrence_until'] != null
@@ -356,7 +363,14 @@ class SupabaseRepository implements AppRepository {
     await _c.from('expense_shares').delete().eq('expense_id', id);
     final shares = e.shares.entries
         .where((s) => p2gm[s.key] != null)
-        .map((s) => {'expense_id': id, 'member_id': p2gm[s.key], 'share': s.value})
+        .map((s) => {
+              'expense_id': id,
+              'member_id': p2gm[s.key],
+              'share': s.value,
+              // O que foi digitado, ao lado do valor calculado — é o que permite
+              // reabrir a edição com "3x, 2x, 1x" (ver Expense.splitInputs).
+              'split_input': e.splitInputs?[s.key],
+            })
         .toList();
     if (shares.isNotEmpty) await _c.from('expense_shares').insert(shares);
   }

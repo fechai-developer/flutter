@@ -101,6 +101,18 @@ class Expense {
   /// Null = sem tipo definido.
   final String? category;
 
+  /// O que a pessoa DIGITOU no rateio, sob o [type] — "3, 2, 1" em partes,
+  /// "50, 30, 20" em porcentagem, os valores em exato. Null quando a divisão é
+  /// igual (não há o que digitar) ou em despesas antigas, salvas antes deste
+  /// campo existir.
+  ///
+  /// Existe porque [shares] é **irreversível**: 3:2:1 de R$ 100 vira
+  /// 50,00 / 33,33 / 16,67 e não há como voltar exatamente às partes originais
+  /// a partir do dinheiro (o arredondamento em centavos come a razão). Guardar
+  /// o que foi digitado é o que faz a tela de edição reabrir com "3x, 2x, 1x"
+  /// em vez dos valores calculados.
+  final Map<String, double>? splitInputs;
+
   const Expense({
     required this.id,
     required this.description,
@@ -116,6 +128,7 @@ class Expense {
     this.recurrenceParentId,
     this.occurrencePeriod,
     this.category,
+    this.splitInputs,
   });
 
   bool get isRecurring => recurrence != Recurrence.none;
@@ -154,6 +167,11 @@ class Expense {
         participantIds: participantIds,
         inputs: inputs,
       ),
+      // Guarda o que foi digitado para a edição reabrir igual (ver [splitInputs]).
+      // Em divisão igual não há entrada do usuário.
+      splitInputs: type == SplitType.equal
+          ? null
+          : {for (final p in participantIds) p: inputs[p] ?? 0},
       date: date,
       recurrence: recurrence,
       recurrenceUntil: recurrenceUntil,
@@ -211,6 +229,7 @@ class Expense {
     String? recurrenceParentId,
     DateTime? occurrencePeriod,
     String? category,
+    Map<String, double>? splitInputs,
   }) =>
       Expense(
         id: id,
@@ -219,6 +238,7 @@ class Expense {
         paidByPersonId: paidByPersonId ?? this.paidByPersonId,
         type: type ?? this.type,
         shares: shares ?? this.shares,
+        splitInputs: splitInputs ?? this.splitInputs,
         date: date ?? this.date,
         recurrence: recurrence ?? this.recurrence,
         recurrenceUntil: recurrenceUntil ?? this.recurrenceUntil,

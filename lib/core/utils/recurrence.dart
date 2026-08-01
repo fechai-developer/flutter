@@ -51,6 +51,10 @@ class RecurrenceGenerator {
         paidByPersonId: t.paidByPersonId,
         type: t.type,
         shares: shares,
+        // Herda o rateio digitado no molde só quando ninguém saiu: se houve
+        // redistribuição, "3x, 2x, 1x" já não descreve esta ocorrência, e é
+        // melhor a edição derivar dos valores do que mentir.
+        splitInputs: shares.length == t.shares.length ? t.splitInputs : null,
         date: billing,
         recurrenceParentId: t.id,
         occurrencePeriod: period,
